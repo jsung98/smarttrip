@@ -1539,16 +1539,9 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                       key={`${dayNum}-${sectionTitle}`}
                       type="button"
                       onClick={() => replaceSection(dayNum, sectionTitle)}
-                      disabled={
-                        regeneratingSection?.dayNum === dayNum &&
-                        regeneratingSection?.section === sectionTitle
-                      }
                       className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:bg-amber-200 disabled:opacity-60"
                     >
-                      {regeneratingSection?.dayNum === dayNum &&
-                      regeneratingSection?.section === sectionTitle
-                        ? `${sectionTitle} 생성 중...`
-                        : `${sectionTitle} 다시 만들기`}
+                      {`${sectionTitle} 다시 만들기`}
                     </button>
                   ))}
                 </div>
