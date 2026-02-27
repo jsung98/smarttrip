@@ -1,6 +1,7 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { getClientId, rateLimit } from "@/lib/rateLimit";
+import type { Activity, DayPlan, ItineraryResponse } from "@/types/itinerary";
 
 function buildPrompt(payload: {
   country: string;
@@ -27,52 +28,159 @@ function buildPrompt(payload: {
   const days = nights + 1;
   const styleList = travelStyles.length ? travelStyles.join(", ") : "일반 관광";
 
-  let depthInstruction: string;
-  if (nights <= 2) {
-    depthInstruction =
-      "핵심 명소 위주로 구성하고, 이동 동선을 짧게 유지해 주세요.";
-  } else if (nights <= 4) {
-    depthInstruction =
-      "주요 관광지 외에 숨은 명소를 1~2개 포함해 주세요.";
-  } else {
-    depthInstruction =
-      "근교 또는 당일치기 추천을 최소 1개 포함해 주세요.";
+  return `당신은 전문 여행 플래너입니다. 목적지 여행 일정을 반드시 JSON으로만 출력하세요.
+
+목적지: ${city}, ${country}
+일수: ${days}일 (${nights}박)
+여행 스타일: ${styleList}
+예산 모드: ${budgetMode}
+동행 유형: ${companionType}
+일정 템포: ${pace}
+희망 활동 시간: ${dayStartHour}:00 ~ ${dayEndHour}:00
+
+규칙:
+- 오직 JSON 객체만 출력하고, 마크다운/설명/코드블록을 절대 포함하지 마세요.
+- days 배열의 길이는 ${days}여야 합니다.
+- 각 활동은 stayMinutes(체류 시간)와 moveMinutesToNext(다음 장소 이동 시간)를 반드시 숫자로 포함합니다.
+- 마지막 활동의 moveMinutesToNext는 반드시 0입니다.
+- stayMinutes는 30 이상 240 이하의 현실적인 값으로 작성합니다.
+- moveMinutesToNext는 0 이상 180 이하의 현실적인 값으로 작성합니다.
+- lat/lng는 알 수 있는 경우에만 숫자로 포함하세요.
+- 전체 일정은 현실적인 동선으로 구성하세요.`;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function sanitizeActivity(input: Activity, isLast: boolean): Activity {
+  const stayMinutes = Math.max(30, Math.min(240, Math.round(input.stayMinutes)));
+  const moveMinutesToNext = isLast ? 0 : Math.max(0, Math.min(180, Math.round(input.moveMinutesToNext)));
+
+  const next: Activity = {
+    name: input.name.trim(),
+    type: input.type.trim() || "attraction",
+    stayMinutes,
+    moveMinutesToNext,
+  };
+
+  if (isFiniteNumber(input.lat)) next.lat = input.lat;
+  if (isFiniteNumber(input.lng)) next.lng = input.lng;
+  return next;
+}
+
+function parseItineraryResponse(raw: string): ItineraryResponse | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
   }
 
-  return `당신은 전문 여행 플래너입니다. 날짜별 일정을 마크다운으로 작성해 주세요. **전체 응답은 반드시 한국어로 작성**해 주세요.
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  if (!Array.isArray(record.days)) return null;
 
-**목적지:** ${city}, ${country}
-**일수:** ${days}일 (${nights}박)
-**여행 스타일:** ${styleList}
-**예산 모드:** ${budgetMode}
-**동행 유형:** ${companionType}
-**일정 템포:** ${pace}
-**희망 활동 시간:** ${dayStartHour}:00 ~ ${dayEndHour}:00
+  const days: DayPlan[] = [];
+  for (const dayItem of record.days) {
+    if (!dayItem || typeof dayItem !== "object") return null;
+    const d = dayItem as Record<string, unknown>;
 
-**작성 규칙:**
-- 출력은 반드시 유효한 마크다운만. 서두나 요약 문장 없이 본문부터 시작.
-- 각 날짜는 다음 섹션으로 구성: ## Day N - [테마/제목], 이후 ### 오전, ### 점심, ### 오후, ### 저녁, ### 밤(선택).
-- 각 활동은: 장소명, 짧은 설명, 다음 이동지까지 **예상 이동 시간**을 포함.
-- 각 섹션에는 **구체적인 장소 2~3곳**을 포함해 주세요. (점심/저녁은 1~2곳)
-- 각 장소에는 **권장 체류 시간** 또는 **방문 팁(베스트 타임/예약 팁)** 중 하나를 포함해 주세요.
-- ${depthInstruction}
-- 하루 일정은 위 활동 시간 범위 안에서 무리하지 않게 구성.
-- ${pace === "여유" ? "여유로운 이동과 휴식 시간을 충분히 포함." : pace === "빡빡" ? "핵심 명소를 더 촘촘히 구성하되 현실적인 이동 시간은 반드시 반영." : "관광과 휴식을 균형 있게 배치."}
-- ${budgetMode === "가성비" ? "무료/저비용 명소와 합리적 식당 비중을 높이세요." : budgetMode === "프리미엄" ? "예약 가치가 있는 시그니처 장소/식당을 일부 포함하세요." : "중간 가격대 중심으로 구성하세요."}
-- ${companionType === "아이동반" ? "아이 동반 기준으로 이동/대기 부담이 적고 화장실/휴식 포인트를 고려." : "동행 유형에 맞는 분위기와 활동 강도를 반영."}
-- 장소는 지리적으로 묶어 이동을 최소화.
-- 식사, 관광, 자유 시간을 균형 있게 구성.
-- 링크는 반드시 **실제 유효한 URL**만 사용하고, https:// 로 시작해야 합니다. 추측이 필요한 경우에는 Google Maps 검색 링크를 사용하세요. (예: https://www.google.com/maps/search/?api=1&query=장소명+도시)
+    if (!isFiniteNumber(d.day) || !Number.isInteger(d.day)) return null;
+    if (typeof d.theme !== "string") return null;
+    if (!Array.isArray(d.activities)) return null;
 
-형식 예시:
-## Day 1 - 바다 산책과 미식
-### 오전
-- **해변 산책로** 아침 산책과 뷰 포인트. [Google 지도](https://maps.google.com/...) **이동 15분**
-### 점심
-- **현지 맛집** 대표 메뉴 소개. [공식 사이트](https://...)
-### 오후
-...
-`;
+    const activities: Activity[] = [];
+    for (let i = 0; i < d.activities.length; i++) {
+      const activityItem = d.activities[i];
+      if (!activityItem || typeof activityItem !== "object") return null;
+      const a = activityItem as Record<string, unknown>;
+
+      if (typeof a.name !== "string" || !a.name.trim()) return null;
+      if (typeof a.type !== "string" || !a.type.trim()) return null;
+      if (!isFiniteNumber(a.stayMinutes)) return null;
+      if (!isFiniteNumber(a.moveMinutesToNext)) return null;
+
+      const rawActivity: Activity = {
+        name: a.name,
+        type: a.type,
+        stayMinutes: a.stayMinutes,
+        moveMinutesToNext: a.moveMinutesToNext,
+        lat: isFiniteNumber(a.lat) ? a.lat : undefined,
+        lng: isFiniteNumber(a.lng) ? a.lng : undefined,
+      };
+      activities.push(sanitizeActivity(rawActivity, i === d.activities.length - 1));
+    }
+
+    days.push({ day: d.day, theme: d.theme.trim(), activities });
+  }
+
+  return { days };
+}
+
+function getSectionIndex(index: number, total: number): number {
+  if (total <= 1) return 0;
+  const ratio = index / (total - 1);
+  if (ratio < 0.2) return 0;
+  if (ratio < 0.45) return 1;
+  if (ratio < 0.75) return 2;
+  if (ratio < 0.95) return 3;
+  return 4;
+}
+
+function buildMapLink(activity: Activity): string {
+  if (isFiniteNumber(activity.lat) && isFiniteNumber(activity.lng)) {
+    return `https://www.google.com/maps/search/?api=1&query=${activity.lat},${activity.lng}`;
+  }
+  const q = encodeURIComponent(activity.name);
+  return `https://www.google.com/maps/search/?api=1&query=${q}`;
+}
+
+function buildMarkdownFromDay(day: DayPlan): string {
+  const sectionTitles = ["오전", "점심", "오후", "저녁", "밤"];
+  const buckets: Activity[][] = [[], [], [], [], []];
+  day.activities.forEach((activity, index) => {
+    const bucket = getSectionIndex(index, day.activities.length);
+    buckets[bucket].push(activity);
+  });
+
+  const requiredSections = [0, 1, 2, 3];
+  const lines: string[] = [`## Day ${day.day} - ${day.theme || `Day ${day.day}`}`];
+
+  for (const sectionIndex of requiredSections) {
+    lines.push(`### ${sectionTitles[sectionIndex]}`);
+    const items = buckets[sectionIndex];
+    if (!items.length) {
+      lines.push("- 이동 및 휴식 시간을 확보하세요");
+      continue;
+    }
+    for (const activity of items) {
+      const link = buildMapLink(activity);
+      lines.push(
+        `- **${activity.name}** (${activity.type}) 체류 ${activity.stayMinutes}분 · 이동 ${activity.moveMinutesToNext}분 · [지도](${link})`
+      );
+    }
+  }
+
+  if (buckets[4].length > 0) {
+    lines.push("### 밤");
+    for (const activity of buckets[4]) {
+      const link = buildMapLink(activity);
+      lines.push(
+        `- **${activity.name}** (${activity.type}) 체류 ${activity.stayMinutes}분 · 이동 ${activity.moveMinutesToNext}분 · [지도](${link})`
+      );
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function buildMarkdownFromItinerary(itinerary: ItineraryResponse): string {
+  return itinerary.days
+    .slice()
+    .sort((a, b) => a.day - b.day)
+    .map((day) => buildMarkdownFromDay(day))
+    .join("\n\n");
 }
 
 export async function POST(request: NextRequest) {
@@ -143,19 +251,64 @@ export async function POST(request: NextRequest) {
       messages: [
         {
           role: "system",
-          content: "여행 일정은 마크다운으로만 출력합니다. 서두나 결론 문장은 쓰지 않습니다. 한국어로 작성합니다.",
+          content: "반드시 JSON 객체만 출력하세요. 마크다운, 코드블록, 설명 문장은 금지입니다.",
         },
         { role: "user", content: prompt },
       ],
       temperature: 0.7,
       max_tokens: 3000,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "itinerary_response",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              days: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    day: { type: "integer" },
+                    theme: { type: "string" },
+                    activities: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        additionalProperties: false,
+                        properties: {
+                          name: { type: "string" },
+                          type: { type: "string" },
+                          stayMinutes: { type: "number" },
+                          moveMinutesToNext: { type: "number" },
+                          lat: { type: "number" },
+                          lng: { type: "number" },
+                        },
+                        required: ["name", "type", "stayMinutes", "moveMinutesToNext"],
+                      },
+                    },
+                  },
+                  required: ["day", "theme", "activities"],
+                },
+              },
+            },
+            required: ["days"],
+          },
+        },
+      },
     });
 
-    const markdown =
-      completion.choices[0]?.message?.content?.trim() ||
-      "*일정을 생성하지 못했습니다.*";
+    const raw = completion.choices[0]?.message?.content?.trim() || "";
+    const itinerary = parseItineraryResponse(raw);
+    if (!itinerary || itinerary.days.length === 0) {
+      return NextResponse.json({ error: "일정 생성 결과를 파싱하지 못했습니다." }, { status: 500 });
+    }
 
-    return NextResponse.json({ markdown });
+    const markdown = buildMarkdownFromItinerary(itinerary);
+    return NextResponse.json({ itinerary, markdown });
   } catch (err) {
     console.error("OpenAI API error:", err);
     const message =
@@ -163,6 +316,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-
-
-
