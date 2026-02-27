@@ -1,4 +1,6 @@
-﻿export const TRAVEL_STYLES = [
+import type { ItineraryResponse } from "@/types/itinerary";
+
+export const TRAVEL_STYLES = [
   "문화·역사",
   "맛집·음식",
   "자연·아웃도어",
@@ -54,6 +56,7 @@ export interface ItineraryPayload extends TripPreferences {
 
 export interface StoredItinerary {
   markdown: string;
+  itinerary?: ItineraryResponse;
   payload: TripFormData;
   generatedAt: string;
   localId?: string;

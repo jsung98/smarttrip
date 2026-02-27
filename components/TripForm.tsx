@@ -160,6 +160,7 @@ export default function TripForm({ initialCountries }: TripFormProps) {
       setLoadingStep(3);
       saveAndActivateItinerary({
         markdown: data.markdown,
+        itinerary: data.itinerary,
         payload,
         generatedAt: new Date().toISOString(),
       });

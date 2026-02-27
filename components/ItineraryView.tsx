@@ -3,8 +3,10 @@
 import { useMemo, useState, useCallback, Fragment, useEffect } from "react";
 import Link from "next/link";
 import ItineraryMap, { type MapPoint } from "@/components/ItineraryMap";
+import { analyzeStructuredDay } from "@/lib/feasibility";
 import { saveAndActivateItinerary } from "@/lib/localItineraryStore";
 import { normalizeTripPayload, type StoredItinerary } from "@/lib/types";
+import type { DayPlan } from "@/types/itinerary";
 
 function MarkdownBlock({ children }: { children: React.ReactNode }) {
   return (
@@ -512,7 +514,7 @@ function replaceSectionInDay(markdown: string, dayNum: number, sectionTitle: str
   return replaceDayInMarkdown(markdown, dayNum, sanitized);
 }
 
-function analyzeDay(raw: string) {
+function analyzeLegacyDay(raw: string) {
   let moveMinutes = 0;
   const moveRegex = /이동\s*(\d+)\s*분/g;
   let moveMatch: RegExpExecArray | null;
@@ -529,7 +531,14 @@ function analyzeDay(raw: string) {
   if (sectionCount >= 6 && itemCount >= 10) warnings.push("섹션 수 대비 활동량이 많아요.");
   if (missingMoveHints >= 3) warnings.push("이동시간 표기가 부족해 현실성 판단이 어려워요.");
 
-  return { moveMinutes, itemCount, warnings };
+  return {
+    totalStay: 0,
+    totalMove: moveMinutes,
+    totalMinutes: moveMinutes,
+    moveRatio: moveMinutes > 0 ? 1 : 0,
+    activityCount: itemCount,
+    warnings,
+  };
 }
 
 function getNightsFromMarkdown(markdown: string) {
@@ -806,7 +815,12 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
           alert("재생성 결과를 적용하지 못했습니다. Day 헤더 형식을 확인해 주세요.");
           return;
         }
-        const next: StoredItinerary = { ...data, markdown: updated, generatedAt: new Date().toISOString() };
+        const next: StoredItinerary = {
+          ...data,
+          markdown: updated,
+          itinerary: undefined,
+          generatedAt: new Date().toISOString(),
+        };
         persistItinerary(next);
       } catch {
         alert("네트워크 오류입니다.");
@@ -842,14 +856,29 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     [budgetMode, companionType, pace, dayStartHour, dayEndHour, travelStyles, nights]
   );
   const feasibility = useMemo(() => {
-    const byDay = daySections.map((section) => ({
-      dayNum: section.dayNum,
-      title: section.title,
-      ...analyzeDay(section.displayRaw),
-    }));
+    const structuredDays = data.itinerary?.days ?? [];
+    const byDay = structuredDays.length
+      ? structuredDays
+          .slice()
+          .sort((a: DayPlan, b: DayPlan) => a.day - b.day)
+          .map((day) => {
+            const analysis = analyzeStructuredDay(day);
+            return {
+              dayNum: day.day,
+              title: day.theme,
+              activityCount: day.activities.length,
+              ...analysis,
+            };
+          })
+      : daySections.map((section) => ({
+          dayNum: section.dayNum,
+          title: section.title,
+          ...analyzeLegacyDay(section.displayRaw),
+        }));
     const warnings = byDay.flatMap((d) => d.warnings.map((w) => `Day ${d.dayNum}: ${w}`));
-    return { byDay, warnings };
-  }, [daySections]);
+    const source: "structured" | "legacy" = structuredDays.length ? "structured" : "legacy";
+    return { byDay, warnings, source };
+  }, [data.itinerary?.days, daySections]);
 
   const mapDays = useMemo(() => {
     const days = Array.from(new Set(mapPoints.map((p) => p.dayNum ?? 1)));
@@ -911,7 +940,12 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
           alert("섹션 재생성 결과를 적용하지 못했습니다. Day 헤더 형식을 확인해 주세요.");
           return;
         }
-        const next: StoredItinerary = { ...data, markdown: updated, generatedAt: new Date().toISOString() };
+        const next: StoredItinerary = {
+          ...data,
+          markdown: updated,
+          itinerary: undefined,
+          generatedAt: new Date().toISOString(),
+        };
         persistItinerary(next);
       } catch {
         alert("네트워크 오류입니다.");
@@ -1013,7 +1047,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     if (!note) return;
     const updated = appendNoteToDay(data.markdown, dayNum, note);
     if (!updated || updated === data.markdown) return;
-    persistItinerary({ ...data, markdown: updated, generatedAt: new Date().toISOString() });
+    persistItinerary({ ...data, markdown: updated, itinerary: undefined, generatedAt: new Date().toISOString() });
     setCopyMessage(`Day ${dayNum}에 메모를 추가했습니다.`);
     setTimeout(() => setCopyMessage(null), 2000);
     cancelNoteDay();
@@ -1035,7 +1069,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     const newBlock = `## Day ${dayNum} - ${title}\n${body}\n`;
     const updated = replaceDayByRaw(data.markdown, dayNum, newBlock);
     if (!updated || updated === data.markdown) return;
-    persistItinerary({ ...data, markdown: updated, generatedAt: new Date().toISOString() });
+    persistItinerary({ ...data, markdown: updated, itinerary: undefined, generatedAt: new Date().toISOString() });
     setCopyMessage(`Day ${dayNum}를 수정했습니다.`);
     setTimeout(() => setCopyMessage(null), 2000);
     cancelEditDay();
@@ -1060,6 +1094,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     persistItinerary({
       ...data,
       payload: { ...data.payload, nights: nextNights },
+      itinerary: undefined,
       markdown: updated,
       generatedAt: new Date().toISOString(),
     });
@@ -1076,6 +1111,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     persistItinerary({
       ...data,
       payload: { ...data.payload, nights: nextNights },
+      itinerary: undefined,
       markdown: updated,
       generatedAt: new Date().toISOString(),
     });
@@ -1391,26 +1427,40 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
             {feasibility.byDay.map((d) => (
               <div
                 key={`check-${d.dayNum}`}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-3"
               >
-                <div className="text-sm text-slate-700">
-                  <span className="font-medium text-slate-900">Day {d.dayNum}</span>
-                  <span className="ml-2">장소 {d.itemCount}개 · 이동 {d.moveMinutes}분</span>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm text-slate-700">
+                    <span className="font-medium text-slate-900">Day {d.dayNum}</span>
+                    <span className="ml-2">{d.title}</span>
+                  </div>
+                  <span
+                    className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                      d.warnings.length
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-emerald-100 text-emerald-700"
+                    }`}
+                  >
+                    {d.warnings.length ? `주의 ${d.warnings.length}` : "양호"}
+                  </span>
                 </div>
-                <span
-                  className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                    d.warnings.length
-                      ? "bg-amber-100 text-amber-800"
-                      : "bg-emerald-100 text-emerald-700"
-                  }`}
-                >
-                  {d.warnings.length ? `주의 ${d.warnings.length}` : "양호"}
-                </span>
+                <div className="mt-2 grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
+                  <div>활동 수: {d.activityCount}개</div>
+                  <div>총 체류 시간: {d.totalStay}분</div>
+                  <div>총 이동 시간: {d.totalMove}분</div>
+                  <div>총 소요 시간: {d.totalMinutes}분</div>
+                  <div>이동 비율: {(d.moveRatio * 100).toFixed(1)}%</div>
+                </div>
               </div>
             ))}
           </div>
         ) : (
-          <p className="mt-3 text-sm text-slate-600">Day 섹션을 파싱할 수 없어 상세 체크를 건너뛰었습니다.</p>
+          <p className="mt-3 text-sm text-slate-600">구조화 일정 데이터가 없어 상세 체크를 건너뛰었습니다.</p>
+        )}
+        {feasibility.source === "legacy" && (
+          <p className="mt-2 text-xs text-slate-500">
+            현재는 구조화 일정(JSON)이 없어 보조 휴리스틱 결과를 표시합니다.
+          </p>
         )}
         {feasibility.warnings.length > 0 && (
           <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-amber-800">
