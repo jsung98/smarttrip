@@ -164,3 +164,9 @@ City and country data are generated from GeoNames dumps (CC-BY 4.0). You must ke
 npm run build
 npm start
 ```
+
+## Project Tracking
+
+- Issue workflow guide: `docs/ISSUE_TRACKING.md`
+- Change history: `docs/CHANGELOG.md`
+- Technical decision log: `docs/DECISIONS.md`
