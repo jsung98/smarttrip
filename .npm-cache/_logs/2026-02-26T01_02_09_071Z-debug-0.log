@@ -1,0 +1,62 @@
+0 verbose cli D:\pro\node.exe D:\pro\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.8.0
+2 info using node@v24.13.1
+3 silly config load:file:D:\pro\node_modules\npm\npmrc
+4 silly config load:file:C:\Users\Rentalcare\smart-trip-planner\.npmrc
+5 silly config load:file:C:\Users\Rentalcare\.npmrc
+6 silly config load:file:C:\Users\Rentalcare\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm install @react-google-maps/api
+8 verbose argv "install" "@react-google-maps/api"
+9 verbose logfile logs-max:10 dir:C:\Users\Rentalcare\smart-trip-planner\.npm-cache\_logs\2026-02-26T01_02_09_071Z-
+10 verbose logfile C:\Users\Rentalcare\smart-trip-planner\.npm-cache\_logs\2026-02-26T01_02_09_071Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+13 silly idealTree buildDeps
+14 silly fetch manifest @react-google-maps/api@*
+15 silly packumentCache full:https://registry.npmjs.org/@react-google-maps%2fapi cache-miss
+16 http fetch GET https://registry.npmjs.org/npm attempt 1 failed with EACCES
+17 http fetch GET https://registry.npmjs.org/@react-google-maps%2fapi attempt 1 failed with EACCES
+18 http fetch GET https://registry.npmjs.org/npm attempt 2 failed with EACCES
+19 http fetch GET https://registry.npmjs.org/@react-google-maps%2fapi attempt 2 failed with EACCES
+20 http fetch GET https://registry.npmjs.org/npm attempt 3 failed with EACCES
+21 http fetch GET https://registry.npmjs.org/@react-google-maps%2fapi attempt 3 failed with EACCES
+22 silly placeDep ROOT @react-google-maps/api@ OK for: smart-trip-planner@1.0.0 want: *
+23 verbose type system
+24 verbose stack FetchError: request to https://registry.npmjs.org/@react-google-maps%2fapi failed, reason: 
+24 verbose stack     at ClientRequest.<anonymous> (D:\pro\node_modules\npm\node_modules\minipass-fetch\lib\index.js:130:14)
+24 verbose stack     at ClientRequest.emit (node:events:508:28)
+24 verbose stack     at emitErrorEvent (node:_http_client:108:11)
+24 verbose stack     at _destroy (node:_http_client:963:9)
+24 verbose stack     at onSocketNT (node:_http_client:983:5)
+24 verbose stack     at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+25 error code EACCES
+26 error errno EACCES
+27 error FetchError: request to https://registry.npmjs.org/@react-google-maps%2fapi failed, reason: 
+27 error     at ClientRequest.<anonymous> (D:\pro\node_modules\npm\node_modules\minipass-fetch\lib\index.js:130:14)
+27 error     at ClientRequest.emit (node:events:508:28)
+27 error     at emitErrorEvent (node:_http_client:108:11)
+27 error     at _destroy (node:_http_client:963:9)
+27 error     at onSocketNT (node:_http_client:983:5)
+27 error     at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+27 error   code: 'EACCES',
+27 error   errno: 'EACCES',
+27 error   type: 'system',
+27 error   requiredBy: '.'
+27 error }
+28 error
+28 error The operation was rejected by your operating system.
+28 error It's possible that the file was already in use (by a text editor or antivirus),
+28 error or that you lack permissions to access it.
+28 error
+28 error If you believe this might be a permissions issue, please double-check the
+28 error permissions of the file and its containing directories, or try running
+28 error the command again as root/Administrator.
+29 silly unfinished npm timer reify 1772067729442
+30 silly unfinished npm timer reify:loadTrees 1772067729442
+31 verbose cwd C:\Users\Rentalcare\smart-trip-planner
+32 verbose os Windows_NT 10.0.26200
+33 verbose node v24.13.1
+34 verbose npm  v11.8.0
+35 verbose exit 1
+36 verbose code 1
+37 error A complete log of this run can be found in: C:\Users\Rentalcare\smart-trip-planner\.npm-cache\_logs\2026-02-26T01_02_09_071Z-debug-0.log

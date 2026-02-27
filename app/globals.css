@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f7fafc;
+  --foreground: #0f172a;
+}
+
+body {
+  color: var(--foreground);
+  background:
+    radial-gradient(circle at 12% 8%, rgba(59, 130, 246, 0.08), transparent 42%),
+    radial-gradient(circle at 88% 10%, rgba(168, 85, 247, 0.08), transparent 36%),
+    linear-gradient(180deg, #fbfdff 0%, #f6f9fc 52%, #eef4fb 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@keyframes progress-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.progress-indeterminate {
+  position: relative;
+  overflow: hidden;
+  background: rgba(148, 163, 184, 0.25);
+}
+
+.progress-indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 50%;
+  background: linear-gradient(90deg, transparent, rgba(124, 58, 237, 0.6), transparent);
+  animation: progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+/* subtle grid overlay for depth */
+.bg-grid {
+  background-image: linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #111827 !important;
+  }
+
+  body {
+    min-height: auto;
+  }
+
+  .bg-grid {
+    background: none !important;
+  }
+
+  [data-print="hide"] {
+    display: none !important;
+  }
+
+  .itinerary-print-root {
+    max-width: none !important;
+  }
+
+  .itinerary-print-root article {
+    background: #fff !important;
+    border: 1px solid #e5e7eb !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .itinerary-print-root [data-print="day-card"] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    margin-bottom: 16px !important;
+  }
+
+  .itinerary-print-root a {
+    color: #1d4ed8 !important;
+    text-decoration: underline !important;
+  }
+}
