@@ -128,20 +128,35 @@ function getSectionIndex(index: number, total: number): number {
   return 4;
 }
 
+function isMealType(type: string): boolean {
+  const normalized = type.trim().toLowerCase();
+  return normalized.includes("food") || normalized.includes("meal") || normalized.includes("restaurant");
+}
+
 function buildMapLink(activity: Activity): string {
-  if (isFiniteNumber(activity.lat) && isFiniteNumber(activity.lng)) {
-    return `https://www.google.com/maps/search/?api=1&query=${activity.lat},${activity.lng}`;
-  }
-  const q = encodeURIComponent(activity.name);
+  const q = isFiniteNumber(activity.lat) && isFiniteNumber(activity.lng)
+    ? encodeURIComponent(`${activity.name} ${activity.lat},${activity.lng}`)
+    : encodeURIComponent(activity.name);
   return `https://www.google.com/maps/search/?api=1&query=${q}`;
 }
 
 function buildMarkdownFromDay(day: DayPlan): string {
   const sectionTitles = ["오전", "점심", "오후", "저녁", "밤"];
   const buckets: Activity[][] = [[], [], [], [], []];
-  day.activities.forEach((activity, index) => {
-    const bucket = getSectionIndex(index, day.activities.length);
-    buckets[bucket].push(activity);
+  const mealActivities = day.activities.filter((activity) => isMealType(activity.type));
+  const nonMealActivities = day.activities.filter((activity) => !isMealType(activity.type));
+
+  // Keep meals anchored to lunch/dinner sections.
+  if (mealActivities.length > 0) buckets[1].push(mealActivities[0]);
+  if (mealActivities.length > 1) buckets[3].push(mealActivities[1]);
+  for (let i = 2; i < mealActivities.length; i++) {
+    buckets[i % 2 === 0 ? 1 : 3].push(mealActivities[i]);
+  }
+
+  // Spread non-meal activities across morning/afternoon/night to reduce long gaps.
+  const coreSections = [0, 2, 4];
+  nonMealActivities.forEach((activity, index) => {
+    buckets[coreSections[index % coreSections.length]].push(activity);
   });
 
   const requiredSections = [0, 1, 2, 3];
@@ -151,7 +166,7 @@ function buildMarkdownFromDay(day: DayPlan): string {
     lines.push(`### ${sectionTitles[sectionIndex]}`);
     const items = buckets[sectionIndex];
     if (!items.length) {
-      lines.push("- 이동 및 휴식 시간을 확보하세요");
+      lines.push(sectionIndex === 1 || sectionIndex === 3 ? "- 식사 장소를 추가해 주세요" : "- 이동 및 휴식 시간을 확보하세요");
       continue;
     }
     for (const activity of items) {
