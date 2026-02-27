@@ -293,7 +293,7 @@ const TEMPLATE_SECTIONS = extractDaySubsections(EMPTY_DAY_TEMPLATE);
 const TEMPLATE_SECTION_MAP = new Map(TEMPLATE_SECTIONS.map((s) => [s.title, s.raw]));
 
 function normalizeDayRaw(raw: string): string {
-  const sectionSet = new Set(ALLOWED_SECTIONS);
+  const sectionSet = new Set<string>(ALLOWED_SECTIONS as readonly string[]);
   const lines = raw.split("\n");
   const normalized = lines.map((line) => {
     const trimmed = line.trim();
@@ -304,7 +304,7 @@ function normalizeDayRaw(raw: string): string {
 }
 
 function dedupeDaySections(sections: { title: string; raw: string }[]): { title: string; raw: string }[] {
-  const allowedSet = new Set(ALLOWED_SECTIONS);
+  const allowedSet = new Set<string>(ALLOWED_SECTIONS as readonly string[]);
   const lastIndexByTitle = new Map<string, number>();
   sections.forEach((section, idx) => {
     if (allowedSet.has(section.title)) lastIndexByTitle.set(section.title, idx);
@@ -317,7 +317,7 @@ function dedupeDaySections(sections: { title: string; raw: string }[]): { title:
 }
 
 function cleanSectionBody(body: string, sectionTitle?: string): string {
-  const sectionSet = new Set(ALLOWED_SECTIONS);
+  const sectionSet = new Set<string>(ALLOWED_SECTIONS as readonly string[]);
   const sectionTailChars = new Set(ALLOWED_SECTIONS.filter((title) => title.length > 1).map((title) => title.slice(-1)));
   if (sectionTitle && sectionTitle.length > 1) {
     sectionTailChars.add(sectionTitle.slice(-1));
@@ -441,7 +441,7 @@ function normalizeSectionBlock(block: string, sectionTitle: string): string {
   // Strip any full-day header that might slip in.
   const withoutDayHeader = normalized.replace(/^##\s*Day\s*\d+[\s\S]*?\n/, "").trim();
   const lines = withoutDayHeader.split("\n");
-  const sectionSet = new Set(ALLOWED_SECTIONS);
+  const sectionSet = new Set<string>(ALLOWED_SECTIONS as readonly string[]);
 
   const isSectionLine = (line: string) => {
     const trimmed = line.trim();
