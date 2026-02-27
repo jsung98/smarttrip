@@ -148,7 +148,7 @@ export default function ItineraryMap({ points, selectedDay = "all" }: ItineraryM
           mapTypeControl: false,
         }}
       >
-        {[...byDay.entries()].map(([day, list]) => {
+        {Array.from(byDay).map(([day, list]) => {
           if (list.length < 2) return null;
           const line = list.map((p) => ({ lat: p.lat, lng: p.lon }));
           return (
