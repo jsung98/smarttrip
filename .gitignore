@@ -1,5 +1,7 @@
-﻿node_modules/
+node_modules/
 .next/
 .env.local
+.npm-cache/
+*.tsbuildinfo
 
 data/geonames/raw/
