@@ -7,7 +7,7 @@ import { analyzeStructuredDay } from "@/lib/feasibility";
 import { saveAndActivateItinerary } from "@/lib/localItineraryStore";
 import { normalizeTripPayload, type StoredItinerary } from "@/lib/types";
 import type { Activity, DayPlan } from "@/types/itinerary";
-import type { FinalPlace, SectionKey, StructuredDay } from "@/types/plan";
+import type { FinalDay, FinalPlace, SectionKey, StructuredDay, StructuredPlan } from "@/types/plan";
 
 function MarkdownBlock({ children }: { children: React.ReactNode }) {
   return (
@@ -764,6 +764,74 @@ const HYBRID_SECTION_TITLES: Record<SectionKey, string> = {
   dinner: "저녁",
   night: "밤",
 };
+const SECTION_TITLE_TO_KEY: Record<string, SectionKey> = Object.entries(HYBRID_SECTION_TITLES).reduce(
+  (acc, [key, title]) => {
+    acc[title] = key as SectionKey;
+    return acc;
+  },
+  {} as Record<string, SectionKey>
+);
+
+type SectionStatus = "ready" | "loading" | "empty" | "error" | "regenerating";
+
+type SectionViewModel = {
+  sectionKey: SectionKey;
+  title: string;
+  places: FinalPlace[];
+  intent: string;
+  durationMinutes: number;
+  type: "tour" | "meal";
+  status: SectionStatus;
+};
+
+function buildSectionViewModel(
+  sectionKey: SectionKey,
+  finalDay?: FinalDay,
+  structuredDay?: StructuredDay,
+  runtimeStatus?: SectionStatus
+): SectionViewModel {
+  const finalSection = finalDay?.sections.find((section) => section.key === sectionKey);
+  const structuredSection = structuredDay?.sections.find((section) => section.key === sectionKey);
+  const type: SectionViewModel["type"] = sectionKey === "lunch" || sectionKey === "dinner" ? "meal" : "tour";
+  const sourcePlaces = finalSection?.places ?? [];
+  const places = type === "meal" ? sourcePlaces.slice(0, 3) : sourcePlaces.slice(0, 1);
+  const computedStatus: SectionStatus = places.length > 0 ? "ready" : "empty";
+  
+  return {
+    sectionKey,
+    title: finalSection?.title || structuredSection?.title || HYBRID_SECTION_TITLES[sectionKey],
+    places,
+    intent: finalSection?.intent || structuredSection?.intent || "",
+    durationMinutes: finalSection?.durationMinutes ?? structuredSection?.durationMinutes ?? 60,
+    type,
+    status: runtimeStatus ?? computedStatus,
+  };
+}
+
+function getSectionStateKey(dayNum: number, sectionKey: SectionKey): string {
+  return `${dayNum}|${sectionKey}`;
+}
+
+function patchStructuredSectionIntent(
+  plan: StructuredPlan | undefined,
+  dayNum: number,
+  sectionKey: SectionKey,
+  intent: string
+): StructuredPlan | undefined {
+  if (!plan?.days?.length) return plan;
+  return {
+    ...plan,
+    days: plan.days.map((day) => {
+      if (day.day !== dayNum) return day;
+      return {
+        ...day,
+        sections: day.sections.map((section) =>
+          section.key === sectionKey ? { ...section, intent } : section
+        ),
+      };
+    }),
+  };
+}
 
 function getNightsFromMarkdown(markdown: string) {
   const days = extractDaySections(markdown).length;
@@ -980,10 +1048,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
   const [editText, setEditText] = useState<string>("");
   const [noteEditingDay, setNoteEditingDay] = useState<number | null>(null);
   const [noteEditText, setNoteEditText] = useState<string>("");
-  const [regeneratingSection, setRegeneratingSection] = useState<{
-    dayNum: number;
-    section: string;
-  } | null>(null);
+  const [sectionStatuses, setSectionStatuses] = useState<Record<string, SectionStatus>>({});
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapPoints, setMapPoints] = useState<MapPoint[]>([]);
@@ -1154,15 +1219,26 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     () => (data.structuredPlan?.days ?? []).slice().sort((a, b) => a.day - b.day),
     [data.structuredPlan?.days]
   );
-  const finalPlacesByDaySection = useMemo(() => {
-    const map = new Map<string, FinalPlace[]>();
-    for (const day of data.finalItinerary?.days ?? []) {
-      for (const section of day.sections ?? []) {
-        map.set(`${day.day}|${section.key}`, section.places ?? []);
-      }
+  const sectionViewModelsByDay = useMemo(() => {
+    const byDay = new Map<number, SectionViewModel[]>();
+    if (!isHybridMode) return byDay;
+
+    const finalDayMap = new Map<number, FinalDay>((data.finalItinerary?.days ?? []).map((day) => [day.day, day]));
+    const structuredDayMap = new Map<number, StructuredDay>(structuredPlanDays.map((day) => [day.day, day]));
+
+    for (const day of structuredPlanDays) {
+      const sectionViewModels = HYBRID_SECTION_KEYS.map((sectionKey) =>
+        buildSectionViewModel(
+          sectionKey,
+          finalDayMap.get(day.day),
+          structuredDayMap.get(day.day),
+          sectionStatuses[getSectionStateKey(day.day, sectionKey)]
+        )
+      );
+      byDay.set(day.day, sectionViewModels);
     }
-    return map;
-  }, [data.finalItinerary]);
+    return byDay;
+  }, [isHybridMode, data.finalItinerary?.days, structuredPlanDays, sectionStatuses]);
   const structuredDays = useMemo(
     () =>
       isHybridMode
@@ -1256,8 +1332,11 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
   }, [mapDays, mapDay]);
 
   const replaceSection = useCallback(
-    async (dayNum: number, sectionTitle: string) => {
-      setRegeneratingSection({ dayNum, section: sectionTitle });
+    async (dayNum: number, sectionKey: SectionKey) => {
+      const sectionTitle = HYBRID_SECTION_TITLES[sectionKey];
+      const stateKey = getSectionStateKey(dayNum, sectionKey);
+      setSectionStatuses((prev) => ({ ...prev, [stateKey]: "regenerating" }));
+
       try {
         const day = rawDaySections.find((d) => d.dayNum === dayNum);
         if (!day) return;
@@ -1275,39 +1354,67 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
             dayStartHour: data.payload.dayStartHour,
             dayEndHour: data.payload.dayEndHour,
             dayNumber: dayNum,
+            sectionKey,
             sectionTitle,
             dayMarkdown: day.raw,
           }),
         });
         const json = await res.json();
         if (!res.ok) {
+          setSectionStatuses((prev) => ({ ...prev, [stateKey]: "error" }));
           alert(json.error || "섹션 재생성에 실패했습니다.");
           return;
         }
-        const newBlock = json.markdown?.trim() || "";
+        const returnedSectionKey = typeof json.sectionKey === "string" ? json.sectionKey : sectionKey;
+        const returnedIntent = typeof json.intent === "string" ? json.intent.trim() : "";
+        const newBlock = typeof json.markdown === "string" ? json.markdown.trim() : "";
         if (!newBlock) {
+          setSectionStatuses((prev) => ({ ...prev, [stateKey]: "error" }));
           alert("섹션 재생성 결과가 비어 있습니다. 잠시 후 다시 시도해 주세요.");
           return;
         }
         const updated = replaceSectionInDay(data.markdown, dayNum, sectionTitle, newBlock);
         if (!updated || updated === data.markdown) {
+          setSectionStatuses((prev) => ({ ...prev, [stateKey]: "error" }));
           alert("섹션 재생성 결과를 적용하지 못했습니다. Day 헤더 형식을 확인해 주세요.");
           return;
         }
+        const patchedStructuredPlan = patchStructuredSectionIntent(
+          data.structuredPlan,
+          dayNum,
+          returnedSectionKey as SectionKey,
+          returnedIntent || `${sectionTitle} 추천 코스`
+        );
         const next: StoredItinerary = {
           ...data,
           markdown: updated,
-          itinerary: undefined,
+          structuredPlan: patchedStructuredPlan,
           generatedAt: new Date().toISOString(),
         };
         persistItinerary(next);
+        setSectionStatuses((prev) => {
+          const nextStatus = { ...prev };
+          delete nextStatus[stateKey];
+          return nextStatus;
+        });
       } catch {
+        setSectionStatuses((prev) => ({ ...prev, [stateKey]: "error" }));
         alert("네트워크 오류입니다.");
-      } finally {
-        setRegeneratingSection(null);
       }
     },
     [data, rawDaySections, persistItinerary]
+  );
+
+  const replaceSectionLegacy = useCallback(
+    async (dayNum: number, sectionTitle: string) => {
+      const mappedKey = SECTION_TITLE_TO_KEY[sectionTitle];
+      if (mappedKey) {
+        await replaceSection(dayNum, mappedKey);
+        return;
+      }
+      alert("유효한 섹션명을 찾지 못했습니다.");
+    },
+    [replaceSection]
   );
 
   const copyText = async (text: string, successMessage: string) => {
@@ -1703,12 +1810,10 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
           {copyMessage}
         </div>
       )}
-      {(regeneratingDay !== null || regeneratingSection !== null) && (
+      {regeneratingDay !== null && (
         <div data-print="hide" className="mb-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-800">
           <div>
-            {regeneratingDay !== null
-              ? `Day ${regeneratingDay} 일정 재생성 중입니다...`
-              : `Day ${regeneratingSection?.dayNum} ${regeneratingSection?.section} 섹션 재생성 중입니다...`}
+            {`Day ${regeneratingDay} 일정 재생성 중입니다...`}
           </div>
           <div className="progress-indeterminate mt-2 h-2 w-full rounded-full" />
         </div>
@@ -1868,7 +1973,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
         )}
       </section>
 
-      {(regeneratingDay !== null || regeneratingSection !== null) ? (
+      {regeneratingDay !== null ? (
         <div className="space-y-4">
           <DaySkeleton />
           <DaySkeleton />
@@ -1886,7 +1991,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
           </div>
           {daySections.map(({ dayNum, title, raw, displayRaw }, dayIdx) => {
             const structuredDay = structuredDays.find((day) => day.day === dayNum);
-            const planDay = structuredPlanDays.find((day) => day.day === dayNum);
+            const sectionViewModels = isHybridMode ? (sectionViewModelsByDay.get(dayNum) ?? []) : [];
             const grouped = isHybridMode ? null : structuredDay ? groupActivitiesForUI(structuredDay.activities) : null;
             const legacyGrouped = isHybridMode ? null : structuredDay ? null : parseActivitiesFromMarkdownDay(displayRaw);
             const analysis = feasibility.byDay.find((item) => item.dayNum === dayNum);
@@ -2036,91 +2141,98 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                   </div>
                 ) : (
                   <div data-print="hide" className="mb-4 flex flex-wrap gap-2">
-                    {getAllowedSectionTitles(displayRaw).map((sectionTitle) => (
-                      <button
-                        key={`${dayNum}-${sectionTitle}`}
-                        type="button"
-                        onClick={() => replaceSection(dayNum, sectionTitle)}
-                        className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:bg-amber-200 disabled:opacity-60"
-                      >
-                        {`${sectionTitle} 다시 만들기`}
-                      </button>
-                    ))}
+                    {isHybridMode
+                      ? HYBRID_SECTION_KEYS.map((sectionKey) => {
+                          const sectionTitle = HYBRID_SECTION_TITLES[sectionKey];
+                          const sectionState = sectionViewModels.find((section) => section.sectionKey === sectionKey)?.status;
+                          const isRegeneratingSection = sectionState === "regenerating";
+                          return (
+                            <button
+                              key={`${dayNum}-${sectionKey}`}
+                              type="button"
+                              onClick={() => void replaceSection(dayNum, sectionKey)}
+                              disabled={isRegeneratingSection}
+                              className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:bg-amber-200 disabled:opacity-60"
+                            >
+                              {isRegeneratingSection ? `${sectionTitle} 생성 중...` : `${sectionTitle} 다시 만들기`}
+                            </button>
+                          );
+                        })
+                      : getAllowedSectionTitles(displayRaw).map((sectionTitle) => (
+                          <button
+                            key={`${dayNum}-${sectionTitle}`}
+                            type="button"
+                            onClick={() => void replaceSectionLegacy(dayNum, sectionTitle)}
+                            className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:bg-amber-200 disabled:opacity-60"
+                          >
+                            {`${sectionTitle} 다시 만들기`}
+                          </button>
+                        ))}
                   </div>
                 )}
 
-                {isHybridMode && planDay ? (
+                {isHybridMode ? (
                   <div className="space-y-4">
-                    {HYBRID_SECTION_KEYS.map((sectionKey) => {
-                      const section = planDay.sections.find((item) => item.key === sectionKey) ?? {
-                        key: sectionKey,
-                        title: HYBRID_SECTION_TITLES[sectionKey],
-                        intent: "",
-                        areaHint: undefined,
-                        durationMinutes: undefined,
-                        foodRequired: sectionKey === "lunch" || sectionKey === "dinner",
-                      };
-                      const isFoodSection = sectionKey === "lunch" || sectionKey === "dinner";
-                      const places = isFoodSection ? (finalPlacesByDaySection.get(`${dayNum}|${sectionKey}`) ?? []) : [];
-
-                      return (
-                        <section key={`hybrid-${dayNum}-${sectionKey}`} className="space-y-2">
-                          <h3 className={`text-base font-semibold ${isFoodSection ? "text-rose-700" : "text-violet-800"}`}>
-                            {HYBRID_SECTION_TITLES[sectionKey]}
-                          </h3>
-                          <article className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-                            {!isFoodSection ? (
-                              <div className="space-y-2">
-                                <p className="text-sm font-semibold text-slate-900">{section.intent || "일반 관광"}</p>
-                                {section.areaHint ? (
-                                  <p className="text-sm text-slate-600">권역: {section.areaHint}</p>
-                                ) : null}
-                                <div className="flex flex-wrap gap-2 text-xs">
-                                  <span className="rounded-full bg-violet-100 px-2.5 py-1 font-medium text-violet-800">
-                                    체류 {formatDuration(section.durationMinutes ?? 60)}
-                                  </span>
-                                </div>
-                              </div>
-                            ) : places.length > 0 ? (
-                              <div className="space-y-2">
-                                {places.map((place, idx) => (
-                                  <article
-                                    key={`hybrid-place-${dayNum}-${sectionKey}-${idx}-${place.name}`}
-                                    className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"
-                                  >
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div>
-                                        <p className="text-sm font-semibold text-slate-900">{place.name}</p>
-                                        {place.address ? (
-                                          <p className="mt-1 text-xs text-slate-600">{place.address}</p>
-                                        ) : null}
-                                      </div>
-                                      <button
-                                        type="button"
-                                        onClick={() => focusPlaceOnMap(dayNum, place.name)}
-                                        className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-200"
-                                      >
-                                        지도
-                                      </button>
-                                    </div>
-                                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                                      <span className="rounded-full bg-rose-100 px-2.5 py-1 font-medium text-rose-800">
+                    {sectionViewModels.map((section) => (
+                      <section key={`hybrid-${dayNum}-${section.sectionKey}`} className="space-y-2">
+                        <h3 className={`text-base font-semibold ${section.type === "meal" ? "text-rose-700" : "text-violet-800"}`}>
+                          {section.title}
+                        </h3>
+                        <article className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                          {section.status === "regenerating" ? (
+                            <p className="mb-2 text-xs font-medium text-violet-700">이 섹션을 다시 생성하고 있습니다...</p>
+                          ) : null}
+                          {section.status === "error" ? (
+                            <p className="mb-2 text-xs font-medium text-rose-700">섹션 재생성에 실패했습니다. 다시 시도해 주세요.</p>
+                          ) : null}
+                          {section.places.length > 0 ? (
+                            <div className="space-y-2">
+                              {section.places.map((place, idx) => (
+                                <article
+                                  key={`hybrid-place-${dayNum}-${section.sectionKey}-${idx}-${place.name}`}
+                                  className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <p className="text-sm font-semibold text-slate-900">{place.name}</p>
+                                      <p className="mt-1 text-xs text-slate-600">
                                         평점 {Number.isFinite(place.rating) ? place.rating.toFixed(1) : "-"}
-                                      </span>
-                                      <span className="rounded-full bg-violet-100 px-2.5 py-1 font-medium text-violet-800">
-                                        체류 {formatDuration(section.durationMinutes ?? 60)}
-                                      </span>
+                                      </p>
+                                      {place.address ? (
+                                        <p className="mt-1 text-xs text-slate-600">{place.address}</p>
+                                      ) : null}
                                     </div>
-                                  </article>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-slate-600">추천 장소를 찾지 못했습니다.</p>
-                            )}
-                          </article>
-                        </section>
-                      );
-                    })}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (place.mapsUrl) {
+                                          window.open(place.mapsUrl, "_blank", "noopener,noreferrer");
+                                          return;
+                                        }
+                                        void focusPlaceOnMap(dayNum, place.name);
+                                      }}
+                                      className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-200"
+                                    >
+                                      지도
+                                    </button>
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-sm text-slate-600">장소를 찾지 못했습니다.</p>
+                          )}
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                            <span className="rounded-full bg-violet-100 px-2.5 py-1 font-medium text-violet-800">
+                              체류 {formatDuration(section.durationMinutes)}
+                            </span>
+                            <span className="rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-700">
+                              추천 테마: {section.intent || "일반 관광"}
+                            </span>
+                          </div>
+                        </article>
+                      </section>
+                    ))}
                   </div>
                 ) : grouped ? (
                   <div className="space-y-4">
