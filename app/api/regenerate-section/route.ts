@@ -2,7 +2,18 @@
 import OpenAI from "openai";
 import { getClientId, rateLimit } from "@/lib/rateLimit";
 
-const ALLOWED_SECTIONS = ["오전", "점심", "오후", "저녁", "밤"];
+const ALLOWED_SECTIONS = [
+  "오전",
+  "점심",
+  "오후",
+  "저녁",
+  "밤",
+  "아침 일정",
+  "점심 일정",
+  "저녁 일정",
+  "점심 식사 장소 추천",
+  "저녁 식사 장소 추천",
+];
 
 export async function POST(request: NextRequest) {
   const clientId = getClientId(request.headers);
@@ -105,7 +116,12 @@ ${dayMarkdown.slice(0, 3000)}
 **요청:** 아래 규칙을 지켜 **### ${sectionTitle}** 섹션만 마크다운으로 출력해 주세요.
 - 반드시 "### ${sectionTitle}"로 시작
 - 각 섹션에 구체적인 장소 2~3곳 (점심/저녁 1~2곳)
+- 점심/저녁이면 반드시 실제 음식점 상호명을 포함
+- 섹션명이 "점심 식사 장소 추천" 또는 "저녁 식사 장소 추천"이면 음식점 상호명만 포함
+- 카페 섹션/항목이면 실제 카페 상호명만 포함
+- 가짜/임시 이름(예: 식당1, 카페1) 금지
 - 각 장소에는 **권장 체류 시간** 또는 **방문 팁** 포함
+- 각 장소 설명에 특징(대표 메뉴/분위기/볼거리) 1줄 포함
 - 이동 시간은 간단히 포함
 - 링크는 반드시 https:// 로 시작하는 실제 URL만 사용
   (필요 시 https://www.google.com/maps/search/?api=1&query=장소명+도시)
@@ -119,7 +135,7 @@ ${dayMarkdown.slice(0, 3000)}
         {
           role: "system",
           content:
-            "요청한 섹션만 마크다운으로 출력합니다. 서두나 결론은 쓰지 않고 한국어로 작성합니다.",
+            "요청한 섹션만 마크다운으로 출력합니다. 서두나 결론은 쓰지 않고 한국어로 작성합니다. 반드시 실존 상호명만 사용하세요.",
         },
         { role: "user", content: prompt },
       ],

@@ -12,6 +12,7 @@ import {
   type TripFormData,
   type TravelStyle,
 } from "@/lib/types";
+import type { FinalItinerary, StructuredPlan } from "@/types/plan";
 import { saveAndActivateItinerary } from "@/lib/localItineraryStore";
 import { Combo } from "@/components/CountryCityCombo";
 
@@ -157,10 +158,38 @@ export default function TripForm({ initialCountries }: TripFormProps) {
         countryCode,
       });
 
+      const structuredPlan = data.structuredPlan as StructuredPlan | undefined;
+      let finalItinerary: FinalItinerary | undefined;
+      if (structuredPlan) {
+        try {
+          const fillRes = await fetch("/api/places/fill", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              structuredPlan,
+              city: cityLabel,
+              country: countryLabel,
+            }),
+          });
+
+          if (!fillRes.ok) {
+            console.warn("places/fill failed:", fillRes.status);
+          } else {
+            const fillData = await fillRes.json();
+            finalItinerary = fillData.finalItinerary as FinalItinerary | undefined;
+          }
+        } catch (error) {
+          console.warn("places/fill failed:", error);
+        }
+      }
+
       setLoadingStep(3);
       saveAndActivateItinerary({
         markdown: data.markdown,
         itinerary: data.itinerary,
+        structuredPlan,
+        finalItinerary,
+        schemaVersion: structuredPlan ? 2 : undefined,
         payload,
         generatedAt: new Date().toISOString(),
       });

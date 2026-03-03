@@ -16,6 +16,7 @@ export type MapPoint = {
 type ItineraryMapProps = {
   points: MapPoint[];
   selectedDay?: number | "all";
+  focusedPlace?: { dayNum: number; name: string } | null;
 };
 
 const SECTION_ORDER: Record<string, number> = {
@@ -39,7 +40,7 @@ function getDayColor(dayNum?: number) {
   return palette[(day - 1) % palette.length];
 }
 
-export default function ItineraryMap({ points, selectedDay = "all" }: ItineraryMapProps) {
+export default function ItineraryMap({ points, selectedDay = "all", focusedPlace = null }: ItineraryMapProps) {
   if (!points.length) return null;
 
   const filtered =
@@ -102,6 +103,22 @@ export default function ItineraryMap({ points, selectedDay = "all" }: ItineraryM
     mapRef.fitBounds(bounds, 80);
   }, [mapRef, sorted]);
 
+  const focusedIndex = useMemo(() => {
+    if (!focusedPlace) return -1;
+    return sorted.findIndex(
+      (p) =>
+        (p.dayNum ?? 1) === focusedPlace.dayNum &&
+        p.name.trim().toLowerCase() === focusedPlace.name.trim().toLowerCase()
+    );
+  }, [focusedPlace, sorted]);
+
+  useEffect(() => {
+    if (!mapRef || focusedIndex < 0) return;
+    const point = sorted[focusedIndex];
+    mapRef.panTo({ lat: point.lat, lng: point.lon });
+    mapRef.setZoom(15);
+  }, [focusedIndex, mapRef, sorted]);
+
   if (!filtered.length) {
     return (
       <div className="flex h-80 w-full items-center justify-center rounded-2xl border border-white/40 bg-white/80 text-sm text-slate-600 shadow-lg">
@@ -162,11 +179,20 @@ export default function ItineraryMap({ points, selectedDay = "all" }: ItineraryM
         {sorted.map((p, idx) => {
           const order = p.order ?? idx + 1;
           const label = String(order);
+          const isFocused = idx === focusedIndex;
           return (
             <Marker
               key={`${p.name}-${idx}`}
               position={{ lat: p.lat, lng: p.lon }}
-              label={{ text: label, color: "#ffffff", fontSize: "11px", fontWeight: "700" }}
+              label={{ text: label, color: "#ffffff", fontSize: isFocused ? "12px" : "11px", fontWeight: "700" }}
+              icon={{
+                path: google.maps.SymbolPath.CIRCLE,
+                scale: isFocused ? 9 : 7,
+                fillColor: isFocused ? "#0f172a" : getDayColor(p.dayNum),
+                fillOpacity: 1,
+                strokeColor: "#ffffff",
+                strokeWeight: 2,
+              }}
               title={p.name}
             />
           );
