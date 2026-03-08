@@ -1,4 +1,4 @@
-import type { StoredItinerary } from "@/lib/types";
+import { normalizeStoredItinerary, type StoredItinerary } from "@/lib/types";
 
 const CURRENT_KEY = "smart-trip-itinerary";
 const RECENT_KEY = "smart-trip-itineraries";
@@ -22,14 +22,9 @@ function readRecent(): StoredItinerary[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item): item is StoredItinerary =>
-        !!item &&
-        typeof item === "object" &&
-        typeof (item as StoredItinerary).markdown === "string" &&
-        typeof (item as StoredItinerary).generatedAt === "string" &&
-        !!(item as StoredItinerary).payload
-    );
+    return parsed
+      .map((item) => normalizeStoredItinerary(item))
+      .filter((item): item is StoredItinerary => !!item);
   } catch {
     return [];
   }
@@ -41,16 +36,20 @@ function writeRecent(items: StoredItinerary[]) {
 }
 
 export function prepareStoredItinerary(itinerary: StoredItinerary): StoredItinerary {
+  const normalized = normalizeStoredItinerary(itinerary);
+  if (!normalized) return itinerary;
   return {
-    ...itinerary,
-    localId: itinerary.localId || newLocalId(),
+    ...normalized,
+    localId: normalized.localId || newLocalId(),
     savedAt: new Date().toISOString(),
   };
 }
 
 export function setCurrentItinerary(itinerary: StoredItinerary) {
   if (!isBrowser()) return;
-  sessionStorage.setItem(CURRENT_KEY, JSON.stringify(itinerary));
+  const normalized = normalizeStoredItinerary(itinerary);
+  if (!normalized) return;
+  sessionStorage.setItem(CURRENT_KEY, JSON.stringify(normalized));
 }
 
 export function saveRecentItinerary(itinerary: StoredItinerary): StoredItinerary {

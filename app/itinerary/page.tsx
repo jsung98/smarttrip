@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import ItineraryView from "@/components/ItineraryView";
 import LoadingSpinner from "@/components/LoadingSpinner";
-import type { StoredItinerary } from "@/lib/types";
+import { normalizeStoredItinerary, type StoredItinerary } from "@/lib/types";
 
 export default function ItineraryPage() {
   const [data, setData] = useState<StoredItinerary | null>(null);
@@ -18,7 +18,10 @@ export default function ItineraryPage() {
     if (!mounted || typeof window === "undefined") return;
     try {
       const raw = sessionStorage.getItem("smart-trip-itinerary");
-      if (raw) setData(JSON.parse(raw) as StoredItinerary);
+      if (raw) {
+        const normalized = normalizeStoredItinerary(JSON.parse(raw));
+        setData(normalized);
+      }
     } catch {
       setData(null);
     }
