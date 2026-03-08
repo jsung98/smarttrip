@@ -7,7 +7,7 @@ import { analyzeStructuredDay } from "@/lib/feasibility";
 import { saveAndActivateItinerary } from "@/lib/localItineraryStore";
 import { normalizeTripPayload, type StoredItinerary } from "@/lib/types";
 import type { Activity, DayPlan } from "@/types/itinerary";
-import type { FinalDay, FinalPlace, SectionKey, StructuredDay, StructuredPlan } from "@/types/plan";
+import type { FinalDay, FinalItinerary, FinalPlace, SectionKey, StructuredDay, StructuredPlan } from "@/types/plan";
 
 function MarkdownBlock({ children }: { children: React.ReactNode }) {
   return (
@@ -833,6 +833,94 @@ function patchStructuredSectionIntent(
   };
 }
 
+function mergeSectionPlaces(
+  prevFinalItinerary: FinalItinerary | undefined,
+  nextFinalItinerary: FinalItinerary | undefined,
+  dayNum: number,
+  sectionKey: SectionKey
+): FinalItinerary | undefined {
+  if (!nextFinalItinerary || !Array.isArray(nextFinalItinerary.days)) {
+    return prevFinalItinerary;
+  }
+
+  if (!prevFinalItinerary) {
+    return nextFinalItinerary;
+  }
+
+  const nextTargetDay = nextFinalItinerary.days.find((day) => day.day === dayNum);
+  if (!nextTargetDay) {
+    return prevFinalItinerary;
+  }
+
+  const nextTargetSection = nextTargetDay.sections.find((section) => section.key === sectionKey);
+  if (!nextTargetSection) {
+    return prevFinalItinerary;
+  }
+
+  return {
+    ...prevFinalItinerary,
+    days: prevFinalItinerary.days.map((day) => {
+      if (day.day !== dayNum) return day;
+
+      return {
+        ...day,
+        sections: day.sections.map((section) => {
+          if (section.key !== sectionKey) return section;
+
+          return {
+            ...section,
+            places: Array.isArray(nextTargetSection.places) ? nextTargetSection.places : section.places,
+          };
+        }),
+      };
+    }),
+  };
+}
+
+async function fetchTargetSectionPlaces(params: {
+  structuredPlan: StructuredPlan;
+  city: string;
+  country: string;
+  dayNum: number;
+  sectionKey: SectionKey;
+}): Promise<FinalItinerary | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    const res = await fetch("/api/places/fill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        structuredPlan: params.structuredPlan,
+        city: params.city,
+        country: params.country,
+        target: {
+          day: params.dayNum,
+          sectionKey: params.sectionKey,
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) return undefined;
+
+    const json = (await res.json()) as { finalItinerary?: FinalItinerary };
+    if (!json.finalItinerary || !Array.isArray(json.finalItinerary.days)) {
+      return undefined;
+    }
+
+    return json.finalItinerary;
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      return undefined;
+    }
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function getNightsFromMarkdown(markdown: string) {
   const days = extractDaySections(markdown).length;
   return Math.max(0, days - 1);
@@ -1385,13 +1473,45 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
           returnedSectionKey as SectionKey,
           returnedIntent || `${sectionTitle} 추천 코스`
         );
+
+        const activeSectionKey = returnedSectionKey as SectionKey;
+        let mergedFinalItinerary = data.finalItinerary;
+        let shouldWarnPlacesRefreshFailure = false;
+
+        if (patchedStructuredPlan) {
+          const nextFinalItinerary = await fetchTargetSectionPlaces({
+            structuredPlan: patchedStructuredPlan,
+            city: data.payload.city,
+            country: data.payload.country,
+            dayNum,
+            sectionKey: activeSectionKey,
+          });
+
+          if (nextFinalItinerary) {
+            mergedFinalItinerary = mergeSectionPlaces(
+              data.finalItinerary,
+              nextFinalItinerary,
+              dayNum,
+              activeSectionKey
+            );
+          } else {
+            shouldWarnPlacesRefreshFailure = true;
+          }
+        } else {
+          shouldWarnPlacesRefreshFailure = true;
+        }
+
         const next: StoredItinerary = {
           ...data,
           markdown: updated,
           structuredPlan: patchedStructuredPlan,
+          finalItinerary: mergedFinalItinerary,
           generatedAt: new Date().toISOString(),
         };
         persistItinerary(next);
+        if (shouldWarnPlacesRefreshFailure) {
+          alert("장소 추천 갱신에 실패해 기존 장소를 유지합니다.");
+        }
         setSectionStatuses((prev) => {
           const nextStatus = { ...prev };
           delete nextStatus[stateKey];
