@@ -21,21 +21,7 @@ type ItineraryMapProps = {
   onMarkerClick?: (order: number) => void;
 };
 
-const SECTION_ORDER: Record<string, number> = {
-  오전: 1,
-  점심: 2,
-  오후: 3,
-  저녁: 4,
-  밤: 5,
-};
-
 const palette = ["#7c3aed", "#0ea5e9", "#f97316", "#16a34a", "#e11d48", "#14b8a6"];
-
-function normalizeSection(section?: string) {
-  if (!section) return "";
-  const trimmed = section.replace(/\s+/g, "").replace(/\(.*\)/g, "");
-  return trimmed;
-}
 
 function getDayColor(dayNum?: number) {
   const day = dayNum ?? 1;
@@ -64,33 +50,18 @@ export default function ItineraryMap({
     region: "kr",
   });
 
-  const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      const dayA = a.dayNum ?? 1;
-      const dayB = b.dayNum ?? 1;
-      if (dayA !== dayB) return dayA - dayB;
-      const sectionA = normalizeSection(a.section);
-      const sectionB = normalizeSection(b.section);
-      const sectionRankA = SECTION_ORDER[sectionA] ?? 99;
-      const sectionRankB = SECTION_ORDER[sectionB] ?? 99;
-      if (sectionRankA !== sectionRankB) return sectionRankA - sectionRankB;
-      const orderA = a.order ?? 0;
-      const orderB = b.order ?? 0;
-      if (orderA !== orderB) return orderA - orderB;
-      return a.name.localeCompare(b.name);
-    });
-  }, [filtered]);
+  const ordered = useMemo(() => filtered.slice(), [filtered]);
 
   const byDay = useMemo(() => {
     const map = new Map<number, MapPoint[]>();
-    for (const p of sorted.filter((point) => point.sectionKey !== "lunch" && point.sectionKey !== "dinner")) {
+    for (const p of ordered.filter((point) => point.sectionKey !== "lunch" && point.sectionKey !== "dinner")) {
       const day = p.dayNum ?? 1;
       const list = map.get(day) ?? [];
       list.push(p);
       map.set(day, list);
     }
     return map;
-  }, [sorted]);
+  }, [ordered]);
 
   const [mapRef, setMapRef] = useState<google.maps.Map | null>(null);
 
@@ -99,32 +70,32 @@ export default function ItineraryMap({
   }, [mapKey]);
 
   useEffect(() => {
-    if (!mapRef || !sorted.length) return;
-    if (sorted.length === 1) {
-      mapRef.setCenter({ lat: sorted[0].lat, lng: sorted[0].lon });
+    if (!mapRef || !ordered.length) return;
+    if (ordered.length === 1) {
+      mapRef.setCenter({ lat: ordered[0].lat, lng: ordered[0].lon });
       mapRef.setZoom(14);
       return;
     }
     const bounds = new google.maps.LatLngBounds();
-    sorted.forEach((p) => bounds.extend({ lat: p.lat, lng: p.lon }));
+    ordered.forEach((p) => bounds.extend({ lat: p.lat, lng: p.lon }));
     mapRef.fitBounds(bounds, 80);
-  }, [mapRef, sorted]);
+  }, [mapRef, ordered]);
 
   const focusedIndex = useMemo(() => {
     if (!focusedPlace) return -1;
-    return sorted.findIndex(
+    return ordered.findIndex(
       (p) =>
         (p.dayNum ?? 1) === focusedPlace.dayNum &&
         p.name.trim().toLowerCase() === focusedPlace.name.trim().toLowerCase()
     );
-  }, [focusedPlace, sorted]);
+  }, [focusedPlace, ordered]);
 
   useEffect(() => {
     if (!mapRef || focusedIndex < 0) return;
-    const point = sorted[focusedIndex];
+    const point = ordered[focusedIndex];
     mapRef.panTo({ lat: point.lat, lng: point.lon });
     mapRef.setZoom(15);
-  }, [focusedIndex, mapRef, sorted]);
+  }, [focusedIndex, mapRef, ordered]);
 
   if (!filtered.length) {
     return (
@@ -156,7 +127,7 @@ export default function ItineraryMap({
     );
   }
 
-  const center = { lat: sorted[0].lat, lng: sorted[0].lon };
+  const center = { lat: ordered[0].lat, lng: ordered[0].lon };
 
   return (
     <div className="h-80 w-full overflow-hidden rounded-2xl border border-white/40 shadow-lg">
@@ -183,7 +154,7 @@ export default function ItineraryMap({
             />
           );
         })}
-        {sorted.map((p, idx) => {
+        {ordered.map((p, idx) => {
           const order = p.order ?? idx + 1;
           const label = String(order);
           const isFocused = idx === focusedIndex;
