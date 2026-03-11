@@ -2,6 +2,10 @@
 
 A production-ready web app that generates day-by-day travel itineraries using OpenAI.
 
+## Live Demo
+
+https://smarttrip-sigma.vercel.app
+
 ## Features
 
 - **Input form**: Country, city, number of nights (1–14), and multi-select travel style
