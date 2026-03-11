@@ -2041,6 +2041,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     if (mapLoading) return;
     if (!force && mapPoints.length) return;
     if (data.structuredPlan?.days?.length) {
+      let nextOrder = 1;
       const points = (data.finalItinerary?.days ?? [])
         .flatMap((day) =>
           (day.sections ?? []).flatMap((section) =>
@@ -2052,20 +2053,12 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                 lon: Number(place.lng),
                 address: place.address,
                 dayNum: day.day,
+                order: nextOrder++,
                 section: section.title,
                 sectionKey: section.key,
               }))
           )
-        )
-        .sort((a, b) => {
-          const byDay = (a.dayNum ?? 0) - (b.dayNum ?? 0);
-          if (byDay !== 0) return byDay;
-          return (a.section ?? "").localeCompare(b.section ?? "", "ko");
-        })
-        .map((point, idx) => ({
-          ...point,
-          order: idx + 1,
-        })) satisfies MapPoint[];
+        ) satisfies MapPoint[];
 
       setMapProvider("google_places");
       setMapPoints(points);
