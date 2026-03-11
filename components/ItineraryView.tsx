@@ -833,6 +833,151 @@ function patchStructuredSectionIntent(
   };
 }
 
+function summarizeSectionBodyAsIntent(body: string): string {
+  const summary = body
+    .split("\n")
+    .map((line) => line.replace(/^\s*-\s*/, "").trim())
+    .filter(Boolean)
+    .join(" / ")
+    .trim();
+  return summary;
+}
+
+function patchStructuredDayFromMarkdown(
+  plan: StructuredPlan | undefined,
+  dayNum: number,
+  rawDayBlock: string
+): StructuredPlan | undefined {
+  if (!plan?.days?.length) return plan;
+
+  const nextIntents = new Map<SectionKey, string>();
+  for (const section of extractDaySubsections(sanitizeDayRaw(rawDayBlock, dayNum))) {
+    const sectionKey = SECTION_TITLE_TO_KEY[section.title];
+    if (!sectionKey) continue;
+    const body = cleanSectionBody(section.raw.replace(/^###\s+.+?\n?/, "").trim(), section.title);
+    const summary = summarizeSectionBodyAsIntent(body);
+    if (summary) nextIntents.set(sectionKey, summary);
+  }
+
+  return {
+    ...plan,
+    days: plan.days.map((day) => {
+      if (day.day !== dayNum) return day;
+      return {
+        ...day,
+        sections: day.sections.map((section) => {
+          const nextIntent = nextIntents.get(section.key);
+          return nextIntent ? { ...section, intent: nextIntent } : section;
+        }),
+      };
+    }),
+  };
+}
+
+function removeDayFromStructuredPlan(plan: StructuredPlan | undefined, dayNum: number): StructuredPlan | undefined {
+  if (!plan?.days?.length) return plan;
+  const remaining = plan.days.filter((day) => day.day !== dayNum);
+  return {
+    ...plan,
+    days: remaining.map((day, idx) => ({
+      ...day,
+      day: idx + 1,
+    })),
+  };
+}
+
+function removeDayFromFinalItinerary(
+  itinerary: FinalItinerary | undefined,
+  dayNum: number
+): FinalItinerary | undefined {
+  if (!itinerary?.days?.length) return itinerary;
+  const remaining = itinerary.days.filter((day) => day.day !== dayNum);
+  return {
+    ...itinerary,
+    days: remaining.map((day, idx) => ({
+      ...day,
+      day: idx + 1,
+    })),
+  };
+}
+
+function removeDayMemoMap(
+  dayMemos: Record<string, string> | undefined,
+  dayNum: number
+): Record<string, string> | undefined {
+  if (!dayMemos) return dayMemos;
+  const nextEntries = Object.entries(dayMemos)
+    .filter(([key]) => Number(key) !== dayNum)
+    .map(([key, value]) => {
+      const numericKey = Number(key);
+      if (Number.isInteger(numericKey) && numericKey > dayNum) {
+        return [String(numericKey - 1), value] as const;
+      }
+      return [key, value] as const;
+    });
+  return nextEntries.length > 0 ? Object.fromEntries(nextEntries) : undefined;
+}
+
+function appendDayToStructuredPlan(plan: StructuredPlan | undefined, dayNum: number): StructuredPlan | undefined {
+  if (!plan?.days) return plan;
+  return {
+    ...plan,
+    days: [
+      ...plan.days,
+      {
+        day: dayNum,
+        sections: HYBRID_SECTION_KEYS.map((sectionKey) => ({
+          key: sectionKey,
+          title: HYBRID_SECTION_TITLES[sectionKey],
+          intent: "",
+          durationMinutes: sectionKey === "lunch" || sectionKey === "dinner" ? 90 : 120,
+          foodRequired: sectionKey === "lunch" || sectionKey === "dinner",
+        })),
+      },
+    ],
+  };
+}
+
+function appendDayToFinalItinerary(
+  itinerary: FinalItinerary | undefined,
+  structuredPlan: StructuredPlan | undefined,
+  dayNum: number
+): FinalItinerary | undefined {
+  if (!structuredPlan?.days) return itinerary;
+  const baseSections =
+    structuredPlan.days.find((day) => day.day === dayNum)?.sections ??
+    HYBRID_SECTION_KEYS.map((sectionKey) => ({
+      key: sectionKey,
+      title: HYBRID_SECTION_TITLES[sectionKey],
+      intent: "",
+      areaHint: undefined,
+      durationMinutes: sectionKey === "lunch" || sectionKey === "dinner" ? 90 : 120,
+      foodRequired: sectionKey === "lunch" || sectionKey === "dinner",
+    }));
+
+  const nextDay: FinalDay = {
+    day: dayNum,
+    sections: baseSections.map((section) => ({
+      key: section.key,
+      title: section.title,
+      intent: section.intent,
+      areaHint: section.areaHint,
+      durationMinutes: section.durationMinutes,
+      foodRequired: section.foodRequired,
+      places: [],
+    })),
+  };
+
+  if (!itinerary?.days) {
+    return { days: [nextDay] };
+  }
+
+  return {
+    ...itinerary,
+    days: [...itinerary.days, nextDay],
+  };
+}
+
 function mergeSectionPlaces(
   prevFinalItinerary: FinalItinerary | undefined,
   nextFinalItinerary: FinalItinerary | undefined,
@@ -1339,12 +1484,15 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
   const daySections = useMemo(
     () => {
       if (isHybridMode) {
-        return structuredPlanDays.map((day) => ({
-          dayNum: day.day,
-          title: "일정",
-          raw: "",
-          displayRaw: "",
-        }));
+        return structuredPlanDays.map((day) => {
+          const markdownDay = rawDaySections.find((item) => item.dayNum === day.day);
+          return {
+            dayNum: day.day,
+            title: markdownDay?.title || "일정",
+            raw: markdownDay?.raw || "",
+            displayRaw: markdownDay ? sanitizeDayRaw(markdownDay.raw, markdownDay.dayNum) : "",
+          };
+        });
       }
       if (!legacyEnabled) return [];
       return rawDaySections.map((day) => ({
@@ -1626,9 +1774,14 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
   const saveNoteToDay = (dayNum: number) => {
     const note = noteEditText.trim();
     if (!note) return;
-    const updated = appendNoteToDay(data.markdown, dayNum, note);
-    if (!updated || updated === data.markdown) return;
-    persistItinerary({ ...data, markdown: updated, itinerary: undefined, generatedAt: new Date().toISOString() });
+    persistItinerary({
+      ...data,
+      dayMemos: {
+        ...(data.dayMemos ?? {}),
+        [String(dayNum)]: note,
+      },
+      generatedAt: new Date().toISOString(),
+    });
     setCopyMessage(`Day ${dayNum}에 메모를 추가했습니다.`);
     setTimeout(() => setCopyMessage(null), 2000);
     cancelNoteDay();
@@ -1650,7 +1803,14 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     const newBlock = `## Day ${dayNum} - ${title}\n${body}\n`;
     const updated = replaceDayByRaw(data.markdown, dayNum, newBlock);
     if (!updated || updated === data.markdown) return;
-    persistItinerary({ ...data, markdown: updated, itinerary: undefined, generatedAt: new Date().toISOString() });
+    const patchedStructuredPlan = patchStructuredDayFromMarkdown(data.structuredPlan, dayNum, newBlock);
+    persistItinerary({
+      ...data,
+      markdown: updated,
+      structuredPlan: patchedStructuredPlan,
+      itinerary: undefined,
+      generatedAt: new Date().toISOString(),
+    });
     setCopyMessage(`Day ${dayNum}를 수정했습니다.`);
     setTimeout(() => setCopyMessage(null), 2000);
     cancelEditDay();
@@ -1672,10 +1832,14 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     ].join("\n");
     const updated = `${data.markdown.trimEnd()}\n\n${newBlock}\n`;
     const nextNights = getNightsFromMarkdown(updated);
+    const nextStructuredPlan = appendDayToStructuredPlan(data.structuredPlan, nextDay);
+    const nextFinalItinerary = appendDayToFinalItinerary(data.finalItinerary, nextStructuredPlan, nextDay);
     persistItinerary({
       ...data,
       payload: { ...data.payload, nights: nextNights },
       itinerary: undefined,
+      structuredPlan: nextStructuredPlan,
+      finalItinerary: nextFinalItinerary,
       markdown: updated,
       generatedAt: new Date().toISOString(),
     });
@@ -1684,19 +1848,31 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
   };
 
   const removeDay = (dayNum: number) => {
+    if ((data.structuredPlan?.days?.length ?? 0) <= 1) {
+      alert("최소 하루 일정은 필요합니다.");
+      return;
+    }
     const confirmed = window.confirm(`Day ${dayNum} 일정을 삭제할까요?`);
     if (!confirmed) return;
-    const updated = clearDayInMarkdown(data.markdown, dayNum);
+    const removed = removeDayFromMarkdown(data.markdown, dayNum);
+    const updated = rebuildDaysSequential(removed);
     if (!updated || updated === data.markdown) return;
     const nextNights = getNightsFromMarkdown(updated);
+    const nextStructuredPlan = removeDayFromStructuredPlan(data.structuredPlan, dayNum);
+    const nextFinalItinerary = removeDayFromFinalItinerary(data.finalItinerary, dayNum);
+    const nextDayMemos = removeDayMemoMap(data.dayMemos, dayNum);
     persistItinerary({
       ...data,
       payload: { ...data.payload, nights: nextNights },
       itinerary: undefined,
+      structuredPlan: nextStructuredPlan,
+      finalItinerary: nextFinalItinerary,
+      dayMemos: nextDayMemos,
       markdown: updated,
       generatedAt: new Date().toISOString(),
     });
-    setCopyMessage(`Day ${dayNum} 일정을 비웠습니다.`);
+    setSectionStatuses({});
+    setCopyMessage(`Day ${dayNum} 일정을 삭제했습니다.`);
     setTimeout(() => setCopyMessage(null), 2000);
   };
 
@@ -2114,6 +2290,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
             const sectionViewModels = isHybridMode ? (sectionViewModelsByDay.get(dayNum) ?? []) : [];
             const grouped = isHybridMode ? null : structuredDay ? groupActivitiesForUI(structuredDay.activities) : null;
             const legacyGrouped = isHybridMode ? null : structuredDay ? null : parseActivitiesFromMarkdownDay(displayRaw);
+            const dayMemo = data.dayMemos?.[String(dayNum)]?.trim() || "";
             const analysis = feasibility.byDay.find((item) => item.dayNum === dayNum);
             const status = analysis ? getStatus(analysis.warnings, analysis.totalMinutes, analysis.moveRatio) : null;
             const visibleScheduleSections = grouped
@@ -2160,7 +2337,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                       onClick={() => addNoteToDay(dayNum)}
                       className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
                     >
-                      메모 추가
+                      메모
                     </button>
                     <button
                       type="button"
@@ -2203,6 +2380,12 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                     ))}
                   </ul>
                 )}
+                {isHybridMode ? (
+                  <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    <p className="font-semibold text-slate-900">📝 메모</p>
+                    <p className="mt-1 whitespace-pre-wrap">{dayMemo || "📝 메모 없음"}</p>
+                  </div>
+                ) : null}
 
                 {editingDay === dayNum ? (
                   <div className="mb-4 space-y-3">

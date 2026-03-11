@@ -67,6 +67,7 @@ export interface StoredItinerary {
   itinerary?: ItineraryResponse;
   structuredPlan?: StructuredPlan;
   finalItinerary?: FinalItinerary;
+  dayMemos?: Record<string, string>;
   schemaVersion?: 1 | 2;
   payload: TripFormData;
   generatedAt: string;
@@ -261,6 +262,14 @@ export function normalizeStoredItinerary(input: unknown): StoredItinerary | null
   const generatedAt = typeof input.generatedAt === "string" && input.generatedAt.trim() ? input.generatedAt : new Date().toISOString();
   const structuredPlan = normalizeStructuredPlan(input.structuredPlan);
   const finalItinerary = normalizeFinalItinerary(input.finalItinerary);
+  const dayMemos = isRecord(input.dayMemos)
+    ? Object.fromEntries(
+        Object.entries(input.dayMemos)
+          .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+          .map(([key, value]) => [key, value.trim()])
+          .filter(([, value]) => value.length > 0)
+      )
+    : undefined;
   const schemaVersion: 1 | 2 = structuredPlan || finalItinerary ? 2 : 1;
 
   return {
@@ -268,6 +277,7 @@ export function normalizeStoredItinerary(input: unknown): StoredItinerary | null
     itinerary: input.itinerary as ItineraryResponse | undefined,
     structuredPlan,
     finalItinerary,
+    dayMemos: dayMemos && Object.keys(dayMemos).length > 0 ? dayMemos : undefined,
     schemaVersion,
     payload,
     generatedAt,
