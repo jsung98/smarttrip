@@ -11,12 +11,14 @@ export type MapPoint = {
   dayNum?: number;
   order?: number;
   section?: string;
+  sectionKey?: "morning" | "lunch" | "afternoon" | "dinner" | "night";
 };
 
 type ItineraryMapProps = {
   points: MapPoint[];
   selectedDay?: number | "all";
   focusedPlace?: { dayNum: number; name: string } | null;
+  onMarkerClick?: (order: number) => void;
 };
 
 const SECTION_ORDER: Record<string, number> = {
@@ -40,7 +42,12 @@ function getDayColor(dayNum?: number) {
   return palette[(day - 1) % palette.length];
 }
 
-export default function ItineraryMap({ points, selectedDay = "all", focusedPlace = null }: ItineraryMapProps) {
+export default function ItineraryMap({
+  points,
+  selectedDay = "all",
+  focusedPlace = null,
+  onMarkerClick,
+}: ItineraryMapProps) {
   if (!points.length) return null;
 
   const filtered =
@@ -76,7 +83,7 @@ export default function ItineraryMap({ points, selectedDay = "all", focusedPlace
 
   const byDay = useMemo(() => {
     const map = new Map<number, MapPoint[]>();
-    for (const p of sorted) {
+    for (const p of sorted.filter((point) => point.sectionKey !== "lunch" && point.sectionKey !== "dinner")) {
       const day = p.dayNum ?? 1;
       const list = map.get(day) ?? [];
       list.push(p);
@@ -185,6 +192,7 @@ export default function ItineraryMap({ points, selectedDay = "all", focusedPlace
               key={`${p.name}-${idx}`}
               position={{ lat: p.lat, lng: p.lon }}
               label={{ text: label, color: "#ffffff", fontSize: isFocused ? "12px" : "11px", fontWeight: "700" }}
+              onClick={() => onMarkerClick?.(order)}
               icon={{
                 path: google.maps.SymbolPath.CIRCLE,
                 scale: isFocused ? 9 : 7,

@@ -2041,27 +2041,31 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     if (mapLoading) return;
     if (!force && mapPoints.length) return;
     if (data.structuredPlan?.days?.length) {
-      const points: MapPoint[] = (data.finalItinerary?.days ?? [])
+      const points = (data.finalItinerary?.days ?? [])
         .flatMap((day) =>
           (day.sections ?? []).flatMap((section) =>
             (section.places ?? [])
               .filter((place) => Number.isFinite(place.lat) && Number.isFinite(place.lng))
-              .map((place, idx) => ({
+              .map((place) => ({
                 name: place.name,
                 lat: Number(place.lat),
                 lon: Number(place.lng),
                 address: place.address,
                 dayNum: day.day,
-                order: idx + 1,
                 section: section.title,
+                sectionKey: section.key,
               }))
           )
         )
         .sort((a, b) => {
           const byDay = (a.dayNum ?? 0) - (b.dayNum ?? 0);
           if (byDay !== 0) return byDay;
-          return (a.order ?? 0) - (b.order ?? 0);
-        });
+          return (a.section ?? "").localeCompare(b.section ?? "", "ko");
+        })
+        .map((point, idx) => ({
+          ...point,
+          order: idx + 1,
+        })) satisfies MapPoint[];
 
       setMapProvider("google_places");
       setMapPoints(points);
@@ -2156,6 +2160,25 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     setFocusedPlace({ dayNum, name });
     mapSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+
+  const handleMarkerCardScroll = useCallback((order: number) => {
+    document.getElementById(`place-${order}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }, []);
+
+  const placeOrderLookup = useMemo(() => {
+    const lookup = new Map<string, number>();
+    mapPoints.forEach((point, idx) => {
+      const order = point.order ?? idx + 1;
+      const key = `${point.dayNum ?? 1}::${point.section ?? ""}::${point.name.trim().toLowerCase()}`;
+      if (!lookup.has(key)) {
+        lookup.set(key, order);
+      }
+    });
+    return lookup;
+  }, [mapPoints]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -2346,7 +2369,12 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
             ))}
           </div>
           {mapPoints.length > 0 ? (
-            <ItineraryMap points={mapPoints} selectedDay={mapDay ?? "all"} focusedPlace={focusedPlace} />
+            <ItineraryMap
+              points={mapPoints}
+              selectedDay={mapDay ?? "all"}
+              focusedPlace={focusedPlace}
+              onMarkerClick={handleMarkerCardScroll}
+            />
           ) : (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-8 text-center text-xs text-slate-500">
               선택한 Day에 표시할 장소가 없습니다.
@@ -2635,6 +2663,11 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                                       {section.places.map((place, idx) => (
                                         <article
                                           key={`hybrid-place-${dayNum}-${section.sectionKey}-${idx}-${place.name}`}
+                                          id={`place-${
+                                            placeOrderLookup.get(
+                                              `${dayNum}::${section.title ?? ""}::${place.name.trim().toLowerCase()}`
+                                            ) ?? `missing-${dayNum}-${section.sectionKey}-${idx}`
+                                          }`}
                                           className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"
                                         >
                                           <div className="flex items-start justify-between gap-3">
@@ -2851,6 +2884,11 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                           {grouped.schedule[sectionTitle].map((activity, idx) => (
                             <article
                               key={`activity-${dayNum}-${sectionTitle}-${idx}-${activity.name}`}
+                              id={`place-${
+                                placeOrderLookup.get(
+                                  `${dayNum}::${sectionTitle}::${activity.name.trim().toLowerCase()}`
+                                ) ?? `missing-${dayNum}-schedule-${idx}`
+                              }`}
                               className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
                             >
                               <div className="flex items-start justify-between gap-3">
@@ -2892,6 +2930,11 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                           {grouped.mealRecs[sectionTitle].map((activity, idx) => (
                             <article
                               key={`activity-${dayNum}-${sectionTitle}-${idx}-${activity.name}`}
+                              id={`place-${
+                                placeOrderLookup.get(
+                                  `${dayNum}::${sectionTitle}::${activity.name.trim().toLowerCase()}`
+                                ) ?? `missing-${dayNum}-meal-${idx}`
+                              }`}
                               className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
                             >
                               <div className="flex items-start justify-between gap-3">
@@ -2935,6 +2978,11 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                           {legacyGrouped![sectionTitle].map((activity, idx) => (
                             <article
                               key={`activity-${dayNum}-${sectionTitle}-${idx}-${activity.name}`}
+                              id={`place-${
+                                placeOrderLookup.get(
+                                  `${dayNum}::${sectionTitle}::${activity.name.trim().toLowerCase()}`
+                                ) ?? `missing-${dayNum}-legacy-${idx}`
+                              }`}
                               className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
                             >
                               <div className="flex items-start justify-between gap-3">
