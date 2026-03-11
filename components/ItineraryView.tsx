@@ -1,6 +1,20 @@
 ﻿"use client";
 
-import { useMemo, useState, useCallback, Fragment, useEffect, useRef } from "react";
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useMemo, useState, useCallback, Fragment, useEffect, useRef, type CSSProperties } from "react";
 import Link from "next/link";
 import ItineraryMap, { type MapPoint } from "@/components/ItineraryMap";
 import { analyzeStructuredDay } from "@/lib/feasibility";
@@ -13,6 +27,35 @@ function MarkdownBlock({ children }: { children: React.ReactNode }) {
   return (
     <div className="prose prose-slate max-w-none prose-headings:font-semibold prose-p:text-slate-700 prose-ul:my-2 prose-li:my-0.5 prose-strong:text-slate-900 prose-a:text-violet-600 prose-a:no-underline hover:prose-a:underline">
       {children}
+    </div>
+  );
+}
+
+function SortableDayCard({
+  id,
+  children,
+}: {
+  id: string;
+  children: (dragHandleProps: {
+    attributes: ReturnType<typeof useSortable>["attributes"];
+    listeners: ReturnType<typeof useSortable>["listeners"];
+    setActivatorNodeRef: ReturnType<typeof useSortable>["setActivatorNodeRef"];
+    isDragging: boolean;
+  }) => React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+  });
+
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.7 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      {children({ attributes, listeners, setActivatorNodeRef, isDragging })}
     </div>
   );
 }
@@ -918,6 +961,62 @@ function removeDayMemoMap(
   return nextEntries.length > 0 ? Object.fromEntries(nextEntries) : undefined;
 }
 
+function reorderArray<T>(items: T[], fromIndex: number, toIndex: number): T[] {
+  if (fromIndex === toIndex) return items.slice();
+  const next = items.slice();
+  const [moved] = next.splice(fromIndex, 1);
+  if (moved === undefined) return items.slice();
+  next.splice(toIndex, 0, moved);
+  return next;
+}
+
+function reorderStructuredPlanDays(
+  plan: StructuredPlan | undefined,
+  fromIndex: number,
+  toIndex: number
+): StructuredPlan | undefined {
+  if (!plan?.days?.length) return plan;
+  const reordered = reorderArray(plan.days, fromIndex, toIndex);
+  return {
+    ...plan,
+    days: reordered.map((day, idx) => ({
+      ...day,
+      day: idx + 1,
+    })),
+  };
+}
+
+function reorderFinalItineraryDays(
+  itinerary: FinalItinerary | undefined,
+  fromIndex: number,
+  toIndex: number
+): FinalItinerary | undefined {
+  if (!itinerary?.days?.length) return itinerary;
+  const reordered = reorderArray(itinerary.days, fromIndex, toIndex);
+  return {
+    ...itinerary,
+    days: reordered.map((day, idx) => ({
+      ...day,
+      day: idx + 1,
+    })),
+  };
+}
+
+function reorderDayMemoMap(
+  dayMemos: Record<string, string> | undefined,
+  fromIndex: number,
+  toIndex: number,
+  dayCount: number
+): Record<string, string> | undefined {
+  if (!dayMemos) return dayMemos;
+  const ordered = Array.from({ length: dayCount }, (_, idx) => dayMemos[String(idx + 1)] ?? "");
+  const reordered = reorderArray(ordered, fromIndex, toIndex);
+  const nextEntries = reordered
+    .map((value, idx) => [String(idx + 1), value.trim()] as const)
+    .filter(([, value]) => value.length > 0);
+  return nextEntries.length > 0 ? Object.fromEntries(nextEntries) : undefined;
+}
+
 function appendDayToStructuredPlan(plan: StructuredPlan | undefined, dayNum: number): StructuredPlan | undefined {
   if (!plan?.days) return plan;
   return {
@@ -1289,7 +1388,19 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
   const [mapProvider, setMapProvider] = useState<string | null>(null);
   const [focusedPlace, setFocusedPlace] = useState<{ dayNum: number; name: string } | null>(null);
   const [expandedWarningDay, setExpandedWarningDay] = useState<number | null>(null);
+  const [pendingReorder, setPendingReorder] = useState<{
+    structuredPlan: StructuredPlan | undefined;
+    finalItinerary: FinalItinerary | undefined;
+    dayMemos: Record<string, string> | undefined;
+  } | null>(null);
   const mapSectionRef = useRef<HTMLElement | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    })
+  );
 
   const persistItinerary = useCallback((next: StoredItinerary) => {
     const normalized: StoredItinerary = {
@@ -1502,6 +1613,10 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     },
     [isHybridMode, legacyEnabled, structuredPlanDays, rawDaySections]
   );
+  const sortableDayIds = useMemo(
+    () => structuredPlanDays.map((day) => `day-${day.day}`),
+    [structuredPlanDays]
+  );
   const { city, country, nights, travelStyles, budgetMode, companionType, pace, dayStartHour, dayEndHour, cityLat, cityLon } =
     data.payload;
   const budgetEstimate = useMemo(
@@ -1566,6 +1681,42 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
       setMapDay(firstDay);
     }
   }, [mapDays, mapDay]);
+
+  useEffect(() => {
+    if (!pendingReorder) return;
+    persistItinerary({
+      ...data,
+      structuredPlan: pendingReorder.structuredPlan,
+      finalItinerary: pendingReorder.finalItinerary,
+      dayMemos: pendingReorder.dayMemos,
+      generatedAt: new Date().toISOString(),
+    });
+    setPendingReorder(null);
+    setFocusedPlace(null);
+    setSectionStatuses({});
+    setMapDay(null);
+  }, [data, pendingReorder, persistItinerary]);
+
+  const handleDayDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      if (regeneratingDay !== null) return;
+      const { active, over } = event;
+      if (!over) return;
+      if (active.id === over.id) return;
+
+      const fromIndex = structuredPlanDays.findIndex((day) => `day-${day.day}` === String(active.id));
+      const toIndex = structuredPlanDays.findIndex((day) => `day-${day.day}` === String(over.id));
+
+      if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+
+      setPendingReorder({
+        structuredPlan: reorderStructuredPlanDays(data.structuredPlan, fromIndex, toIndex),
+        finalItinerary: reorderFinalItineraryDays(data.finalItinerary, fromIndex, toIndex),
+        dayMemos: reorderDayMemoMap(data.dayMemos, fromIndex, toIndex, structuredPlanDays.length),
+      });
+    },
+    [data.dayMemos, data.finalItinerary, data.structuredPlan, regeneratingDay, structuredPlanDays]
+  );
 
   const replaceSection = useCallback(
     async (dayNum: number, sectionKey: SectionKey) => {
@@ -2285,32 +2436,273 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
               Day 추가
             </button>
           </div>
-          {daySections.map(({ dayNum, title, raw, displayRaw }, dayIdx) => {
-            const structuredDay = structuredDays.find((day) => day.day === dayNum);
-            const sectionViewModels = isHybridMode ? (sectionViewModelsByDay.get(dayNum) ?? []) : [];
-            const grouped = isHybridMode ? null : structuredDay ? groupActivitiesForUI(structuredDay.activities) : null;
-            const legacyGrouped = isHybridMode ? null : structuredDay ? null : parseActivitiesFromMarkdownDay(displayRaw);
-            const dayMemo = data.dayMemos?.[String(dayNum)]?.trim() || "";
-            const analysis = feasibility.byDay.find((item) => item.dayNum === dayNum);
-            const status = analysis ? getStatus(analysis.warnings, analysis.totalMinutes, analysis.moveRatio) : null;
-            const visibleScheduleSections = grouped
-              ? (["아침 일정", "점심 일정", "저녁 일정"] as const).filter((sectionTitle) => grouped.schedule[sectionTitle].length > 0)
-              : [];
-            const visibleMealSections = grouped
-              ? (["점심 식사 장소 추천", "저녁 식사 장소 추천"] as const).filter(
-                  (sectionTitle) => grouped.mealRecs[sectionTitle].length > 0
-                )
-              : [];
-            const visibleLegacySections: Array<"오전" | "점심" | "오후" | "저녁" | "밤"> = legacyGrouped
-              ? (["오전", "점심", "오후", "저녁", "밤"] as const).filter((sectionTitle) => legacyGrouped[sectionTitle].length > 0)
-              : [];
+          {isHybridMode ? (
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDayDragEnd}>
+              <SortableContext items={sortableDayIds} strategy={verticalListSortingStrategy}>
+                {daySections.map(({ dayNum, title, raw, displayRaw }, dayIdx) => {
+                  const structuredDay = structuredDays.find((day) => day.day === dayNum);
+                  const sectionViewModels = sectionViewModelsByDay.get(dayNum) ?? [];
+                  const dayMemo = data.dayMemos?.[String(dayNum)]?.trim() || "";
+                  const analysis = feasibility.byDay.find((item) => item.dayNum === dayNum);
+                  const status = analysis ? getStatus(analysis.warnings, analysis.totalMinutes, analysis.moveRatio) : null;
 
-            return (
-              <article
-                key={`day-card-${dayNum}-${dayIdx}-${title}`}
-                data-print="day-card"
-                className="rounded-3xl border border-white/20 bg-white/90 p-5 shadow-xl backdrop-blur sm:p-8"
-              >
+                  return (
+                    <SortableDayCard key={`day-card-${dayNum}-${dayIdx}-${title}`} id={`day-${dayNum}`}>
+                      {({ attributes, listeners, setActivatorNodeRef, isDragging }) => (
+                        <article
+                          data-print="day-card"
+                          className={`rounded-3xl border border-white/20 bg-white/90 p-5 shadow-xl backdrop-blur sm:p-8 ${
+                            isDragging ? "ring-2 ring-violet-200" : ""
+                          }`}
+                        >
+                          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                            <div className="flex items-start gap-3">
+                              <button
+                                ref={setActivatorNodeRef}
+                                type="button"
+                                aria-label={`Day ${dayNum} 순서 이동`}
+                                className="cursor-grab rounded-lg bg-slate-100 px-2.5 py-1.5 text-base font-semibold text-slate-500 transition hover:bg-slate-200 active:cursor-grabbing"
+                                {...attributes}
+                                {...listeners}
+                              >
+                                ☰
+                              </button>
+                              <div>
+                                <h2 className="text-xl font-bold text-slate-900">Day {dayNum} · {title}</h2>
+                                {structuredDay?.summary && (
+                                  <p className="mt-1 text-sm text-slate-600">{structuredDay.summary}</p>
+                                )}
+                                {analysis && (
+                                  <p className="mt-2 text-xs text-slate-500">
+                                    총 체류 {formatDuration(analysis.totalStay)} · 이동 {formatDuration(analysis.totalMove)} · 총{" "}
+                                    {formatDuration(analysis.totalMinutes)} · 이동 비율 {(analysis.moveRatio * 100).toFixed(1)}%
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            <div data-print="hide" className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => startEditDay(dayNum, raw)}
+                                className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
+                              >
+                                편집
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => addNoteToDay(dayNum)}
+                                className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
+                              >
+                                메모
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => replaceDay(dayNum)}
+                                disabled={regeneratingDay === dayNum}
+                                className="rounded-lg bg-violet-100 px-3 py-1.5 text-sm font-medium text-violet-700 transition hover:bg-violet-200 disabled:opacity-50"
+                              >
+                                {regeneratingDay === dayNum ? "생성 중..." : "이 날 다시 만들기"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => removeDay(dayNum)}
+                                className="rounded-lg bg-rose-100 px-3 py-1.5 text-sm font-medium text-rose-700 transition hover:bg-rose-200"
+                              >
+                                이 날 삭제
+                              </button>
+                            </div>
+                          </div>
+
+                          {status && (
+                            <div className="mb-3 flex items-center justify-between gap-2">
+                              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${status.tone}`}>
+                                {status.label}
+                              </span>
+                              {analysis && analysis.warnings.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedWarningDay((prev) => (prev === dayNum ? null : dayNum))}
+                                  className="text-xs font-medium text-amber-700 hover:underline"
+                                >
+                                  {expandedWarningDay === dayNum ? "경고 숨기기" : `경고 보기 (${analysis.warnings.length})`}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                          {analysis && analysis.warnings.length > 0 && expandedWarningDay === dayNum && (
+                            <ul className="mb-3 list-disc space-y-1 pl-5 text-xs text-amber-800">
+                              {analysis.warnings.map((warning, idx) => (
+                                <li key={`warn-list-${dayNum}-${idx}`}>{warning}</li>
+                              ))}
+                            </ul>
+                          )}
+                          <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                            <p className="font-semibold text-slate-900">📝 메모</p>
+                            <p className="mt-1 whitespace-pre-wrap">{dayMemo || "📝 메모 없음"}</p>
+                          </div>
+
+                          {editingDay === dayNum ? (
+                            <div className="mb-4 space-y-3">
+                              <p className="text-xs text-slate-500">
+                                제목은 고정입니다. 본문만 수정하세요.
+                              </p>
+                              <textarea
+                                value={editText}
+                                onChange={(e) => setEditText(e.target.value)}
+                                rows={12}
+                                className="w-full rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-200"
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => saveEditDay(dayNum, title)}
+                                  className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700"
+                                >
+                                  저장
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={cancelEditDay}
+                                  className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200"
+                                >
+                                  취소
+                                </button>
+                              </div>
+                            </div>
+                          ) : noteEditingDay === dayNum ? (
+                            <div className="mb-4 space-y-3 rounded-2xl border border-slate-200 bg-white p-3">
+                              <p className="text-xs text-slate-500">Day {dayNum} 메모를 입력하세요.</p>
+                              <textarea
+                                value={noteEditText}
+                                onChange={(e) => setNoteEditText(e.target.value)}
+                                rows={4}
+                                className="w-full rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-200"
+                                placeholder="예: 저녁 예약 필요 / 우천 시 실내 대체 코스"
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => saveNoteToDay(dayNum)}
+                                  className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700"
+                                >
+                                  메모 저장
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={cancelNoteDay}
+                                  className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200"
+                                >
+                                  취소
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div data-print="hide" className="mb-4 flex flex-wrap gap-2">
+                              {HYBRID_SECTION_KEYS.map((sectionKey) => {
+                                const sectionTitle = HYBRID_SECTION_TITLES[sectionKey];
+                                const sectionState = sectionViewModels.find((section) => section.sectionKey === sectionKey)?.status;
+                                const isRegeneratingSection = sectionState === "regenerating";
+                                return (
+                                  <button
+                                    key={`${dayNum}-${sectionKey}`}
+                                    type="button"
+                                    onClick={() => void replaceSection(dayNum, sectionKey)}
+                                    disabled={isRegeneratingSection}
+                                    className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:bg-amber-200 disabled:opacity-60"
+                                  >
+                                    {isRegeneratingSection ? `${sectionTitle} 생성 중...` : `${sectionTitle} 다시 만들기`}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          <div className="space-y-4">
+                            {sectionViewModels.map((section) => (
+                              <section key={`hybrid-${dayNum}-${section.sectionKey}`} className="space-y-2">
+                                <h3 className={`text-base font-semibold ${section.type === "meal" ? "text-rose-700" : "text-violet-800"}`}>
+                                  {section.title}
+                                </h3>
+                                <article className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                                  {section.status === "regenerating" ? (
+                                    <p className="mb-2 text-xs font-medium text-violet-700">이 섹션을 다시 생성하고 있습니다...</p>
+                                  ) : null}
+                                  {section.status === "error" ? (
+                                    <p className="mb-2 text-xs font-medium text-rose-700">섹션 재생성에 실패했습니다. 다시 시도해 주세요.</p>
+                                  ) : null}
+                                  {section.places.length > 0 ? (
+                                    <div className="space-y-2">
+                                      {section.places.map((place, idx) => (
+                                        <article
+                                          key={`hybrid-place-${dayNum}-${section.sectionKey}-${idx}-${place.name}`}
+                                          className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"
+                                        >
+                                          <div className="flex items-start justify-between gap-3">
+                                            <div>
+                                              <p className="text-sm font-semibold text-slate-900">{place.name}</p>
+                                              <p className="mt-1 text-xs text-slate-600">
+                                                평점 {Number.isFinite(place.rating) ? place.rating.toFixed(1) : "-"}
+                                              </p>
+                                              {place.address ? (
+                                                <p className="mt-1 text-xs text-slate-600">{place.address}</p>
+                                              ) : null}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                if (place.mapsUrl) {
+                                                  window.open(place.mapsUrl, "_blank", "noopener,noreferrer");
+                                                  return;
+                                                }
+                                                void focusPlaceOnMap(dayNum, place.name);
+                                              }}
+                                              className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-200"
+                                            >
+                                              지도
+                                            </button>
+                                          </div>
+                                        </article>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <p className="text-sm text-slate-600">장소를 찾지 못했습니다.</p>
+                                  )}
+                                </article>
+                              </section>
+                            ))}
+                          </div>
+                        </article>
+                      )}
+                    </SortableDayCard>
+                  );
+                })}
+              </SortableContext>
+            </DndContext>
+          ) : (
+            daySections.map(({ dayNum, title, raw, displayRaw }, dayIdx) => {
+              const structuredDay = structuredDays.find((day) => day.day === dayNum);
+              const grouped = structuredDay ? groupActivitiesForUI(structuredDay.activities) : null;
+              const legacyGrouped = structuredDay ? null : parseActivitiesFromMarkdownDay(displayRaw);
+              const analysis = feasibility.byDay.find((item) => item.dayNum === dayNum);
+              const status = analysis ? getStatus(analysis.warnings, analysis.totalMinutes, analysis.moveRatio) : null;
+              const visibleScheduleSections = grouped
+                ? (["아침 일정", "점심 일정", "저녁 일정"] as const).filter((sectionTitle) => grouped.schedule[sectionTitle].length > 0)
+                : [];
+              const visibleMealSections = grouped
+                ? (["점심 식사 장소 추천", "저녁 식사 장소 추천"] as const).filter(
+                    (sectionTitle) => grouped.mealRecs[sectionTitle].length > 0
+                  )
+                : [];
+              const visibleLegacySections: Array<"오전" | "점심" | "오후" | "저녁" | "밤"> = legacyGrouped
+                ? (["오전", "점심", "오후", "저녁", "밤"] as const).filter((sectionTitle) => legacyGrouped[sectionTitle].length > 0)
+                : [];
+
+              return (
+                <article
+                  key={`day-card-${dayNum}-${dayIdx}-${title}`}
+                  data-print="day-card"
+                  className="rounded-3xl border border-white/20 bg-white/90 p-5 shadow-xl backdrop-blur sm:p-8"
+                >
                 <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h2 className="text-xl font-bold text-slate-900">Day {dayNum} · {title}</h2>
@@ -2380,13 +2772,6 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                     ))}
                   </ul>
                 )}
-                {isHybridMode ? (
-                  <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    <p className="font-semibold text-slate-900">📝 메모</p>
-                    <p className="mt-1 whitespace-pre-wrap">{dayMemo || "📝 메모 없음"}</p>
-                  </div>
-                ) : null}
-
                 {editingDay === dayNum ? (
                   <div className="mb-4 space-y-3">
                     <p className="text-xs text-slate-500">
@@ -2444,100 +2829,20 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                   </div>
                 ) : (
                   <div data-print="hide" className="mb-4 flex flex-wrap gap-2">
-                    {isHybridMode
-                      ? HYBRID_SECTION_KEYS.map((sectionKey) => {
-                          const sectionTitle = HYBRID_SECTION_TITLES[sectionKey];
-                          const sectionState = sectionViewModels.find((section) => section.sectionKey === sectionKey)?.status;
-                          const isRegeneratingSection = sectionState === "regenerating";
-                          return (
-                            <button
-                              key={`${dayNum}-${sectionKey}`}
-                              type="button"
-                              onClick={() => void replaceSection(dayNum, sectionKey)}
-                              disabled={isRegeneratingSection}
-                              className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:bg-amber-200 disabled:opacity-60"
-                            >
-                              {isRegeneratingSection ? `${sectionTitle} 생성 중...` : `${sectionTitle} 다시 만들기`}
-                            </button>
-                          );
-                        })
-                      : getAllowedSectionTitles(displayRaw).map((sectionTitle) => (
-                          <button
-                            key={`${dayNum}-${sectionTitle}`}
-                            type="button"
-                            onClick={() => void replaceSectionLegacy(dayNum, sectionTitle)}
-                            className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:bg-amber-200 disabled:opacity-60"
-                          >
-                            {`${sectionTitle} 다시 만들기`}
-                          </button>
-                        ))}
+                    {getAllowedSectionTitles(displayRaw).map((sectionTitle) => (
+                      <button
+                        key={`${dayNum}-${sectionTitle}`}
+                        type="button"
+                        onClick={() => void replaceSectionLegacy(dayNum, sectionTitle)}
+                        className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:bg-amber-200 disabled:opacity-60"
+                      >
+                        {`${sectionTitle} 다시 만들기`}
+                      </button>
+                    ))}
                   </div>
                 )}
 
-                {isHybridMode ? (
-                  <div className="space-y-4">
-                    {sectionViewModels.map((section) => (
-                      <section key={`hybrid-${dayNum}-${section.sectionKey}`} className="space-y-2">
-                        <h3 className={`text-base font-semibold ${section.type === "meal" ? "text-rose-700" : "text-violet-800"}`}>
-                          {section.title}
-                        </h3>
-                        <article className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-                          {section.status === "regenerating" ? (
-                            <p className="mb-2 text-xs font-medium text-violet-700">이 섹션을 다시 생성하고 있습니다...</p>
-                          ) : null}
-                          {section.status === "error" ? (
-                            <p className="mb-2 text-xs font-medium text-rose-700">섹션 재생성에 실패했습니다. 다시 시도해 주세요.</p>
-                          ) : null}
-                          {section.places.length > 0 ? (
-                            <div className="space-y-2">
-                              {section.places.map((place, idx) => (
-                                <article
-                                  key={`hybrid-place-${dayNum}-${section.sectionKey}-${idx}-${place.name}`}
-                                  className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"
-                                >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div>
-                                      <p className="text-sm font-semibold text-slate-900">{place.name}</p>
-                                      <p className="mt-1 text-xs text-slate-600">
-                                        평점 {Number.isFinite(place.rating) ? place.rating.toFixed(1) : "-"}
-                                      </p>
-                                      {place.address ? (
-                                        <p className="mt-1 text-xs text-slate-600">{place.address}</p>
-                                      ) : null}
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        if (place.mapsUrl) {
-                                          window.open(place.mapsUrl, "_blank", "noopener,noreferrer");
-                                          return;
-                                        }
-                                        void focusPlaceOnMap(dayNum, place.name);
-                                      }}
-                                      className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-200"
-                                    >
-                                      지도
-                                    </button>
-                                  </div>
-                                </article>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-sm text-slate-600">장소를 찾지 못했습니다.</p>
-                          )}
-                          <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                            <span className="rounded-full bg-violet-100 px-2.5 py-1 font-medium text-violet-800">
-                              체류 {formatDuration(section.durationMinutes)}
-                            </span>
-                            <span className="rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-700">
-                              추천 테마: {section.intent || "일반 관광"}
-                            </span>
-                          </div>
-                        </article>
-                      </section>
-                    ))}
-                  </div>
-                ) : grouped ? (
+                {grouped ? (
                   <div className="space-y-4">
                     {visibleScheduleSections.map((sectionTitle) => (
                       <section key={`day-${dayNum}-${sectionTitle}`} className="space-y-2">
@@ -2673,7 +2978,8 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
                 )}
               </article>
             );
-          })}
+          })
+        )}
         </div>
       ) : hasStructuredPlan || !legacyEnabled ? (
         <article data-print="day-card" className="rounded-3xl border border-white/20 bg-white/90 p-6 shadow-xl backdrop-blur sm:p-8">
