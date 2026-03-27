@@ -18,10 +18,21 @@ type GenerateRequest = {
 };
 
 type RawSection = Record<string, unknown>;
-type RawDay = Record<string, unknown>;
 type RawPlan = {
   days?: unknown;
 };
+
+type ControlledGenerateErrorCode = "OPENAI_RESPONSE_TRUNCATED" | "OPENAI_INVALID_JSON";
+
+class ControlledGenerateError extends Error {
+  code: ControlledGenerateErrorCode;
+
+  constructor(code: ControlledGenerateErrorCode, message: string) {
+    super(message);
+    this.name = "ControlledGenerateError";
+    this.code = code;
+  }
+}
 
 const SECTION_TITLES: Record<SectionKey, string> = {
   morning: "오전",
@@ -87,7 +98,7 @@ function sanitizeSection(rawSection: RawSection): StructuredSection | null {
 }
 
 function sanitizeStructuredPlan(rawPlan: RawPlan): StructuredPlan {
-  const rawDays = rawPlan.days as unknown[];
+  const rawDays = Array.isArray(rawPlan.days) ? rawPlan.days : [];
   const days: StructuredPlan["days"] = [];
 
   for (const rawDay of rawDays) {
@@ -119,11 +130,20 @@ function stripCodeFence(text: string): string {
 
 function parseRawPlan(content: string): RawPlan {
   const cleaned = stripCodeFence(content);
-  const parsed = JSON.parse(cleaned) as unknown;
-  if (!isRecord(parsed)) {
-    throw new Error("invalid_root");
+  try {
+    const parsed = JSON.parse(cleaned) as unknown;
+    if (!isRecord(parsed)) {
+      throw new Error("invalid_root");
+    }
+    return parsed as RawPlan;
+  } catch (error) {
+    console.error("Generate JSON parse failed:", {
+      error: error instanceof Error ? error.message : String(error),
+      rawResponse: content,
+      cleanedResponse: cleaned,
+    });
+    throw new ControlledGenerateError("OPENAI_INVALID_JSON", PARSE_ERROR_MESSAGE);
   }
-  return parsed as RawPlan;
 }
 
 function sectionToMarkdown(section: StructuredSection): string {
@@ -175,7 +195,9 @@ function buildLegacyItineraryFromStructuredPlan(plan: StructuredPlan): Itinerary
 }
 
 function buildPrompt(input: Required<Pick<GenerateRequest, "country" | "city" | "nights">> & GenerateRequest): string {
-  const styleList = Array.isArray(input.travelStyles) && input.travelStyles.length > 0 ? input.travelStyles.join(", ") : "일반 관광";
+  const styleList =
+    Array.isArray(input.travelStyles) && input.travelStyles.length > 0 ? input.travelStyles.join(", ") : "일반 관광";
+
   return [
     "당신은 여행 일정 구조 설계 보조 시스템입니다.",
     "반드시 JSON만 출력하세요. 설명 문장, 마크다운, 코드블록 금지.",
@@ -211,6 +233,70 @@ function buildPrompt(input: Required<Pick<GenerateRequest, "country" | "city" | 
   ].join("\n");
 }
 
+async function requestStructuredPlan(openai: OpenAI, body: GenerateRequest, country: string, city: string, nights: number) {
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0.5,
+    max_tokens: 2200,
+    messages: [
+      {
+        role: "system",
+        content:
+          "반드시 StructuredPlan JSON만 출력한다. 장소명, 좌표, 평점, 링크를 생성하지 않는다. key는 morning,lunch,afternoon,dinner,night만 사용한다.",
+      },
+      {
+        role: "user",
+        content: buildPrompt({ ...body, country, city, nights }),
+      },
+    ],
+  });
+
+  const choice = completion.choices[0];
+  if (choice?.finish_reason === "length") {
+    console.error("OpenAI generate truncated response:", {
+      finishReason: choice.finish_reason,
+      rawResponse: choice.message?.content ?? "",
+    });
+    throw new ControlledGenerateError("OPENAI_RESPONSE_TRUNCATED", PARSE_ERROR_MESSAGE);
+  }
+
+  return choice?.message?.content?.trim() || "";
+}
+
+async function requestStructuredPlanWithRetry(
+  openai: OpenAI,
+  body: GenerateRequest,
+  country: string,
+  city: string,
+  nights: number
+): Promise<RawPlan> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const text = await requestStructuredPlan(openai, body, country, city, nights);
+      return parseRawPlan(text);
+    } catch (error) {
+      lastError = error;
+      const retryable =
+        error instanceof ControlledGenerateError &&
+        (error.code === "OPENAI_RESPONSE_TRUNCATED" || error.code === "OPENAI_INVALID_JSON");
+
+      console.warn("Generate attempt failed:", {
+        attempt: attempt + 1,
+        retrying: retryable && attempt === 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      if (!retryable || attempt === 1) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("unknown_generate_error");
+}
+
 export async function POST(request: NextRequest) {
   const clientId = getClientId(request.headers);
   const limit = rateLimit(`generate:${clientId}`, { windowMs: 60_000, max: 8 });
@@ -233,7 +319,7 @@ export async function POST(request: NextRequest) {
   const city = typeof body.city === "string" ? body.city.trim() : "";
   const nights = Number(body.nights);
   if (!country || !city) {
-    return NextResponse.json({ error: "국가와 도시가 필요합니다." }, { status: 400 });
+    return NextResponse.json({ error: "국가와 도시는 필수입니다." }, { status: 400 });
   }
   if (!Number.isInteger(nights) || nights < 1 || nights > 14) {
     return NextResponse.json({ error: "숙박 일수는 1~14 사이로 입력해 주세요." }, { status: 400 });
@@ -241,25 +327,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.5,
-      max_tokens: 2200,
-      messages: [
-        {
-          role: "system",
-          content:
-            "반드시 StructuredPlan JSON만 출력한다. 장소명/좌표/평점/링크를 생성하지 않는다. key는 morning,lunch,afternoon,dinner,night만 사용한다.",
-        },
-        {
-          role: "user",
-          content: buildPrompt({ ...body, country, city, nights }),
-        },
-      ],
-    });
-
-    const text = completion.choices[0]?.message?.content?.trim() || "";
-    const rawPlan = parseRawPlan(text);
+    const rawPlan = await requestStructuredPlanWithRetry(openai, body, country, city, nights);
 
     if (!Array.isArray(rawPlan.days)) {
       return NextResponse.json({ error: PARSE_ERROR_MESSAGE }, { status: 500 });
@@ -284,6 +352,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ structuredPlan, markdown, itinerary });
   } catch (err) {
     console.error("OpenAI generate error:", err);
+    if (err instanceof ControlledGenerateError) {
+      return NextResponse.json({ error: PARSE_ERROR_MESSAGE, code: err.code }, { status: 502 });
+    }
     return NextResponse.json({ error: PARSE_ERROR_MESSAGE }, { status: 500 });
   }
 }
