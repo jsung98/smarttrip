@@ -1,25 +1,22 @@
 ﻿"use client";
 
 import {
-  DndContext,
   PointerSensor,
   closestCenter,
   useSensor,
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import {
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import { useMemo, useState, useCallback, Fragment, useEffect, useRef, type CSSProperties } from "react";
 import Link from "next/link";
 import ItineraryMap, { type MapPoint } from "@/components/ItineraryMap";
+import TripEditor from "@/components/itinerary/TripEditor";
+import { getTripDayId, getTripSectionId, toTripDocument } from "@/lib/domain/trip-adapters";
+import { tripReducer } from "@/lib/domain/trip-reducer";
 import { analyzeStructuredDay } from "@/lib/feasibility";
 import { saveAndActivateItinerary } from "@/lib/localItineraryStore";
 import { normalizeTripPayload, type StoredItinerary } from "@/lib/types";
+import type { TripDocument } from "@/lib/domain/trip-document";
 import type { Activity, DayPlan } from "@/types/itinerary";
 import type { FinalDay, FinalItinerary, FinalPlace, SectionKey, StructuredDay, StructuredPlan } from "@/types/plan";
 
@@ -27,35 +24,6 @@ function MarkdownBlock({ children }: { children: React.ReactNode }) {
   return (
     <div className="prose prose-slate max-w-none prose-headings:font-semibold prose-p:text-slate-700 prose-ul:my-2 prose-li:my-0.5 prose-strong:text-slate-900 prose-a:text-violet-600 prose-a:no-underline hover:prose-a:underline">
       {children}
-    </div>
-  );
-}
-
-function SortableDayCard({
-  id,
-  children,
-}: {
-  id: string;
-  children: (dragHandleProps: {
-    attributes: ReturnType<typeof useSortable>["attributes"];
-    listeners: ReturnType<typeof useSortable>["listeners"];
-    setActivatorNodeRef: ReturnType<typeof useSortable>["setActivatorNodeRef"];
-    isDragging: boolean;
-  }) => React.ReactNode;
-}) {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
-    id,
-  });
-
-  const style: CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.7 : 1,
-  };
-
-  return (
-    <div ref={setNodeRef} style={style}>
-      {children({ attributes, listeners, setActivatorNodeRef, isDragging })}
     </div>
   );
 }
@@ -820,7 +788,7 @@ type SectionStatus = "ready" | "loading" | "empty" | "error" | "regenerating";
 type SectionViewModel = {
   sectionKey: SectionKey;
   title: string;
-  places: FinalPlace[];
+  places: Array<FinalPlace & { id?: string }>;
   intent: string;
   durationMinutes: number;
   type: "tour" | "meal";
@@ -846,6 +814,28 @@ function buildSectionViewModel(
     places,
     intent: finalSection?.intent || structuredSection?.intent || "",
     durationMinutes: finalSection?.durationMinutes ?? structuredSection?.durationMinutes ?? 60,
+    type,
+    status: runtimeStatus ?? computedStatus,
+  };
+}
+
+function buildSectionViewModelFromTripDay(
+  day: ReturnType<typeof toTripDocument>["days"][number],
+  sectionKey: SectionKey,
+  runtimeStatus?: SectionStatus
+): SectionViewModel {
+  const section = day.sections.find((item) => item.key === sectionKey);
+  const type: SectionViewModel["type"] = sectionKey === "lunch" || sectionKey === "dinner" ? "meal" : "tour";
+  const sourcePlaces = section?.places ?? [];
+  const places = type === "meal" ? sourcePlaces.slice(0, 3) : sourcePlaces.slice(0, 1);
+  const computedStatus: SectionStatus = places.length > 0 ? "ready" : "empty";
+
+  return {
+    sectionKey,
+    title: section?.title || HYBRID_SECTION_TITLES[sectionKey],
+    places,
+    intent: section?.intent || "",
+    durationMinutes: section?.durationMinutes ?? 60,
     type,
     status: runtimeStatus ?? computedStatus,
   };
@@ -1366,11 +1356,53 @@ function extractPlaceCandidatesWithMeta(markdown: string): PlaceCandidate[] {
   return all;
 }
 
+function normalizeStoredForView(input: StoredItinerary): StoredItinerary {
+  return {
+    ...input,
+    payload: normalizeTripPayload(input.payload),
+  };
+}
+
+function applyReplaceSectionPatch(
+  current: TripDocument,
+  nextStored: StoredItinerary,
+  dayNum: number,
+  sectionKey: SectionKey
+): TripDocument {
+  const candidate = toTripDocument(nextStored);
+  const nextDay = candidate.days.find((day) => day.dayNumber === dayNum);
+  const nextSection = nextDay?.sections.find((section) => section.key === sectionKey);
+  if (!nextDay || !nextSection) {
+    return candidate;
+  }
+
+  return tripReducer(current, {
+    type: "replaceSection",
+    baseRevision: current.revision,
+    dayId: getTripDayId(dayNum),
+    sectionId: getTripSectionId(dayNum, sectionKey),
+    section: nextSection,
+  });
+}
+
+function applyReplaceDayPatch(current: TripDocument, nextStored: StoredItinerary, dayNum: number): TripDocument {
+  const candidate = toTripDocument(nextStored);
+  const nextDay = candidate.days.find((day) => day.dayNumber === dayNum);
+  if (!nextDay) {
+    return candidate;
+  }
+
+  return tripReducer(current, {
+    type: "replaceDay",
+    baseRevision: current.revision,
+    dayId: getTripDayId(dayNum),
+    day: nextDay,
+  });
+}
+
 export default function ItineraryView({ data: initialData }: { data: StoredItinerary }) {
-  const [data, setData] = useState<StoredItinerary>(() => ({
-    ...initialData,
-    payload: normalizeTripPayload(initialData.payload),
-  }));
+  const [data, setData] = useState<StoredItinerary>(() => normalizeStoredForView(initialData));
+  const [tripDocument, setTripDocument] = useState<TripDocument>(() => toTripDocument(normalizeStoredForView(initialData)));
   const [regeneratingDay, setRegeneratingDay] = useState<number | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareLoading, setShareLoading] = useState(false);
@@ -1386,13 +1418,15 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
   const [mapPoints, setMapPoints] = useState<MapPoint[]>([]);
   const [mapDay, setMapDay] = useState<number | "all" | null>(null);
   const [mapProvider, setMapProvider] = useState<string | null>(null);
-  const [focusedPlace, setFocusedPlace] = useState<{ dayNum: number; name: string } | null>(null);
+  const [focusedPlace, setFocusedPlace] = useState<{ dayNum: number; name: string; placeId?: string } | null>(null);
   const [expandedWarningDay, setExpandedWarningDay] = useState<number | null>(null);
   const [pendingReorder, setPendingReorder] = useState<{
     structuredPlan: StructuredPlan | undefined;
     finalItinerary: FinalItinerary | undefined;
     dayMemos: Record<string, string> | undefined;
   } | null>(null);
+  const dataRef = useRef<StoredItinerary>(normalizeStoredForView(initialData));
+  const tripDocumentRef = useRef<TripDocument>(toTripDocument(normalizeStoredForView(initialData)));
   const mapSectionRef = useRef<HTMLElement | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -1402,13 +1436,22 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     })
   );
 
-  const persistItinerary = useCallback((next: StoredItinerary) => {
-    const normalized: StoredItinerary = {
-      ...next,
-      payload: normalizeTripPayload(next.payload),
-    };
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    tripDocumentRef.current = tripDocument;
+  }, [tripDocument]);
+
+  const persistItinerary = useCallback((next: StoredItinerary, nextTripDocument?: TripDocument) => {
+    const normalized = normalizeStoredForView(next);
     const saved = saveAndActivateItinerary(normalized);
+    const resolvedTripDocument = nextTripDocument ?? toTripDocument(saved);
+    dataRef.current = saved;
+    tripDocumentRef.current = resolvedTripDocument;
     setData(saved);
+    setTripDocument(resolvedTripDocument);
     return saved;
   }, []);
 
@@ -1487,7 +1530,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
 
         if (!genRes.ok || !genJson.structuredPlan) {
           // structured 실패 → fallback
-          persistItinerary({
+          const next: StoredItinerary = {
             ...data,
             markdown: updatedMarkdown,
             itinerary: undefined,
@@ -1495,7 +1538,10 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
             finalItinerary: undefined,
             schemaVersion: undefined,
             generatedAt: new Date().toISOString(),
-          });
+          };
+          const normalizedNext = normalizeStoredForView(next);
+          const nextTripDocument = applyReplaceDayPatch(tripDocumentRef.current, normalizedNext, dayNum);
+          persistItinerary(normalizedNext, nextTripDocument);
           return;
         }
 
@@ -1524,7 +1570,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
         }
 
         // structured 저장
-        persistItinerary({
+        const next: StoredItinerary = {
           ...data,
           markdown: updatedMarkdown,
           structuredPlan,
@@ -1532,11 +1578,14 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
           itinerary: finalItinerary ?? undefined,
           schemaVersion: 2,
           generatedAt: new Date().toISOString(),
-        });
+        };
+        const normalizedNext = normalizeStoredForView(next);
+        const nextTripDocument = applyReplaceDayPatch(tripDocumentRef.current, normalizedNext, dayNum);
+        persistItinerary(normalizedNext, nextTripDocument);
 
       } catch {
         // structured 체인 전체 실패 → markdown fallback
-        persistItinerary({
+        const next: StoredItinerary = {
           ...data,
           markdown: updatedMarkdown,
           itinerary: undefined,
@@ -1544,7 +1593,10 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
           finalItinerary: undefined,
           schemaVersion: undefined,
           generatedAt: new Date().toISOString(),
-        });
+        };
+        const normalizedNext = normalizeStoredForView(next);
+        const nextTripDocument = applyReplaceDayPatch(tripDocumentRef.current, normalizedNext, dayNum);
+        persistItinerary(normalizedNext, nextTripDocument);
       }
 
     } catch {
@@ -1559,6 +1611,14 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
   const isHybridMode = data.schemaVersion === 2 && hasStructuredPlan;
   const legacyEnabled = data.schemaVersion !== 2;
   const rawDaySections = useMemo(() => extractDaySections(data.markdown), [data.markdown]);
+  const rawDaySectionMap = useMemo(
+    () => new Map(rawDaySections.map((day) => [day.dayNum, day] as const)),
+    [rawDaySections]
+  );
+  const tripDocumentDays = useMemo(
+    () => tripDocument.days.slice().sort((a, b) => a.dayNumber - b.dayNumber),
+    [tripDocument]
+  );
   const structuredPlanDays = useMemo(
     () => (data.structuredPlan?.days ?? []).slice().sort((a, b) => a.day - b.day),
     [data.structuredPlan?.days]
@@ -1567,22 +1627,14 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     const byDay = new Map<number, SectionViewModel[]>();
     if (!isHybridMode) return byDay;
 
-    const finalDayMap = new Map<number, FinalDay>((data.finalItinerary?.days ?? []).map((day) => [day.day, day]));
-    const structuredDayMap = new Map<number, StructuredDay>(structuredPlanDays.map((day) => [day.day, day]));
-
-    for (const day of structuredPlanDays) {
+    for (const day of tripDocumentDays) {
       const sectionViewModels = HYBRID_SECTION_KEYS.map((sectionKey) =>
-        buildSectionViewModel(
-          sectionKey,
-          finalDayMap.get(day.day),
-          structuredDayMap.get(day.day),
-          sectionStatuses[getSectionStateKey(day.day, sectionKey)]
-        )
+        buildSectionViewModelFromTripDay(day, sectionKey, sectionStatuses[getSectionStateKey(day.dayNumber, sectionKey)])
       );
-      byDay.set(day.day, sectionViewModels);
+      byDay.set(day.dayNumber, sectionViewModels);
     }
     return byDay;
-  }, [isHybridMode, data.finalItinerary?.days, structuredPlanDays, sectionStatuses]);
+  }, [isHybridMode, tripDocumentDays, sectionStatuses]);
   const structuredDays = useMemo(
     () =>
       isHybridMode
@@ -1595,11 +1647,11 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
   const daySections = useMemo(
     () => {
       if (isHybridMode) {
-        return structuredPlanDays.map((day) => {
-          const markdownDay = rawDaySections.find((item) => item.dayNum === day.day);
+        return tripDocumentDays.map((day) => {
+          const markdownDay = rawDaySectionMap.get(day.dayNumber);
           return {
-            dayNum: day.day,
-            title: markdownDay?.title || "일정",
+            dayNum: day.dayNumber,
+            title: day.title || markdownDay?.title || "일정",
             raw: markdownDay?.raw || "",
             displayRaw: markdownDay ? sanitizeDayRaw(markdownDay.raw, markdownDay.dayNum) : "",
           };
@@ -1611,11 +1663,11 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
         displayRaw: sanitizeDayRaw(day.raw, day.dayNum),
       }));
     },
-    [isHybridMode, legacyEnabled, structuredPlanDays, rawDaySections]
+    [isHybridMode, legacyEnabled, tripDocumentDays, rawDaySectionMap, rawDaySections]
   );
   const sortableDayIds = useMemo(
-    () => structuredPlanDays.map((day) => `day-${day.day}`),
-    [structuredPlanDays]
+    () => (isHybridMode ? tripDocumentDays.map((day) => day.id) : structuredPlanDays.map((day) => `day-${day.day}`)),
+    [isHybridMode, structuredPlanDays, tripDocumentDays]
   );
   const { city, country, nights, travelStyles, budgetMode, companionType, pace, dayStartHour, dayEndHour, cityLat, cityLon } =
     data.payload;
@@ -1654,6 +1706,31 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     const source: "structured" | "legacy" = structuredDays.length ? "structured" : "legacy";
     return { byDay, source };
   }, [structuredDays, daySections]);
+  const hybridEditorDays = useMemo(
+    () =>
+      isHybridMode
+        ? daySections.map(({ dayNum, title, raw }) => {
+            const structuredDay = structuredDays.find((day) => day.day === dayNum);
+            const sectionViewModels = sectionViewModelsByDay.get(dayNum) ?? [];
+            const dayMemo = data.dayMemos?.[String(dayNum)]?.trim() || "";
+            const analysis = feasibility.byDay.find((item) => item.dayNum === dayNum) ?? null;
+            const status = analysis ? getStatus(analysis.warnings, analysis.totalMinutes, analysis.moveRatio) : null;
+
+            return {
+              sortableId: `day-${dayNum}`,
+              dayNum,
+              title,
+              raw,
+              dayMemo,
+              structuredSummary: structuredDay?.summary,
+              analysis,
+              status,
+              sectionViewModels,
+            };
+          })
+        : [],
+    [isHybridMode, daySections, structuredDays, sectionViewModelsByDay, data.dayMemos, feasibility.byDay]
+  );
 
   const mapDays = useMemo(() => {
     const structuredDays = (data.structuredPlan?.days ?? [])
@@ -1807,7 +1884,14 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
           finalItinerary: mergedFinalItinerary,
           generatedAt: new Date().toISOString(),
         };
-        persistItinerary(next);
+        const normalizedNext = normalizeStoredForView(next);
+        const nextTripDocument = applyReplaceSectionPatch(
+          tripDocumentRef.current,
+          normalizedNext,
+          dayNum,
+          activeSectionKey
+        );
+        persistItinerary(normalizedNext, nextTripDocument);
         if (shouldWarnPlacesRefreshFailure) {
           alert("장소 추천 갱신에 실패해 기존 장소를 유지합니다.");
         }
@@ -2042,17 +2126,18 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     if (!force && mapPoints.length) return;
     if (data.structuredPlan?.days?.length) {
       let nextOrder = 1;
-      const points = (data.finalItinerary?.days ?? [])
+      const points = tripDocumentDays
         .flatMap((day) =>
-          (day.sections ?? []).flatMap((section) =>
-            (section.places ?? [])
+          day.sections.flatMap((section) =>
+            section.places
               .filter((place) => Number.isFinite(place.lat) && Number.isFinite(place.lng))
               .map((place) => ({
+                id: place.id,
                 name: place.name,
                 lat: Number(place.lat),
                 lon: Number(place.lng),
                 address: place.address,
-                dayNum: day.day,
+                dayNum: day.dayNumber,
                 order: nextOrder++,
                 section: section.title,
                 sectionKey: section.key,
@@ -2145,12 +2230,12 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     }
   };
 
-  const focusPlaceOnMap = async (dayNum: number, name: string) => {
+  const focusPlaceOnMap = async (dayNum: number, name: string, placeId?: string) => {
     if (!mapPoints.length) {
       await loadMapPoints();
     }
     setMapDay(dayNum);
-    setFocusedPlace({ dayNum, name });
+    setFocusedPlace({ dayNum, name, placeId });
     mapSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
@@ -2165,7 +2250,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
     const lookup = new Map<string, number>();
     mapPoints.forEach((point, idx) => {
       const order = point.order ?? idx + 1;
-      const key = `${point.dayNum ?? 1}::${point.section ?? ""}::${point.name.trim().toLowerCase()}`;
+      const key = point.id ?? `${point.dayNum ?? 1}::${point.section ?? ""}::${point.name.trim().toLowerCase()}`;
       if (!lookup.has(key)) {
         lookup.set(key, order);
       }
@@ -2186,7 +2271,7 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
 
   useEffect(() => {
     void loadMapPoints(true);
-  }, [data.markdown, data.structuredPlan, data.finalItinerary]);
+  }, [data.markdown, data.structuredPlan, data.finalItinerary, tripDocumentDays]);
 
   return (
     <div className="itinerary-print-root mx-auto max-w-3xl">
@@ -2458,252 +2543,34 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
             </button>
           </div>
           {isHybridMode ? (
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDayDragEnd}>
-              <SortableContext items={sortableDayIds} strategy={verticalListSortingStrategy}>
-                {daySections.map(({ dayNum, title, raw, displayRaw }, dayIdx) => {
-                  const structuredDay = structuredDays.find((day) => day.day === dayNum);
-                  const sectionViewModels = sectionViewModelsByDay.get(dayNum) ?? [];
-                  const dayMemo = data.dayMemos?.[String(dayNum)]?.trim() || "";
-                  const analysis = feasibility.byDay.find((item) => item.dayNum === dayNum);
-                  const status = analysis ? getStatus(analysis.warnings, analysis.totalMinutes, analysis.moveRatio) : null;
-
-                  return (
-                    <SortableDayCard key={`day-card-${dayNum}-${dayIdx}-${title}`} id={`day-${dayNum}`}>
-                      {({ attributes, listeners, setActivatorNodeRef, isDragging }) => (
-                        <article
-                          data-print="day-card"
-                          className={`rounded-3xl border border-white/20 bg-white/90 p-5 shadow-xl backdrop-blur sm:p-8 ${
-                            isDragging ? "ring-2 ring-violet-200" : ""
-                          }`}
-                        >
-                          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-                            <div className="flex items-start gap-3">
-                              <button
-                                ref={setActivatorNodeRef}
-                                type="button"
-                                aria-label={`Day ${dayNum} 순서 이동`}
-                                className="cursor-grab rounded-lg bg-slate-100 px-2.5 py-1.5 text-base font-semibold text-slate-500 transition hover:bg-slate-200 active:cursor-grabbing"
-                                {...attributes}
-                                {...listeners}
-                              >
-                                ☰
-                              </button>
-                              <div>
-                                <h2 className="text-xl font-bold text-slate-900">Day {dayNum} · {title}</h2>
-                                {structuredDay?.summary && (
-                                  <p className="mt-1 text-sm text-slate-600">{structuredDay.summary}</p>
-                                )}
-                                {analysis && (
-                                  <p className="mt-2 text-xs text-slate-500">
-                                    총 체류 {formatDuration(analysis.totalStay)} · 이동 {formatDuration(analysis.totalMove)} · 총{" "}
-                                    {formatDuration(analysis.totalMinutes)} · 이동 비율 {(analysis.moveRatio * 100).toFixed(1)}%
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                            <div data-print="hide" className="flex flex-wrap gap-2">
-                              <button
-                                type="button"
-                                onClick={() => startEditDay(dayNum, raw)}
-                                className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
-                              >
-                                편집
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => addNoteToDay(dayNum)}
-                                className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
-                              >
-                                메모
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => replaceDay(dayNum)}
-                                disabled={regeneratingDay === dayNum}
-                                className="rounded-lg bg-violet-100 px-3 py-1.5 text-sm font-medium text-violet-700 transition hover:bg-violet-200 disabled:opacity-50"
-                              >
-                                {regeneratingDay === dayNum ? "생성 중..." : "이 날 다시 만들기"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => removeDay(dayNum)}
-                                className="rounded-lg bg-rose-100 px-3 py-1.5 text-sm font-medium text-rose-700 transition hover:bg-rose-200"
-                              >
-                                이 날 삭제
-                              </button>
-                            </div>
-                          </div>
-
-                          {status && (
-                            <div className="mb-3 flex items-center justify-between gap-2">
-                              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${status.tone}`}>
-                                {status.label}
-                              </span>
-                              {analysis && analysis.warnings.length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() => setExpandedWarningDay((prev) => (prev === dayNum ? null : dayNum))}
-                                  className="text-xs font-medium text-amber-700 hover:underline"
-                                >
-                                  {expandedWarningDay === dayNum ? "경고 숨기기" : `경고 보기 (${analysis.warnings.length})`}
-                                </button>
-                              )}
-                            </div>
-                          )}
-                          {analysis && analysis.warnings.length > 0 && expandedWarningDay === dayNum && (
-                            <ul className="mb-3 list-disc space-y-1 pl-5 text-xs text-amber-800">
-                              {analysis.warnings.map((warning, idx) => (
-                                <li key={`warn-list-${dayNum}-${idx}`}>{warning}</li>
-                              ))}
-                            </ul>
-                          )}
-                          <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                            <p className="font-semibold text-slate-900">📝 메모</p>
-                            <p className="mt-1 whitespace-pre-wrap">{dayMemo || "📝 메모 없음"}</p>
-                          </div>
-
-                          {editingDay === dayNum ? (
-                            <div className="mb-4 space-y-3">
-                              <p className="text-xs text-slate-500">
-                                제목은 고정입니다. 본문만 수정하세요.
-                              </p>
-                              <textarea
-                                value={editText}
-                                onChange={(e) => setEditText(e.target.value)}
-                                rows={12}
-                                className="w-full rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-200"
-                              />
-                              <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => saveEditDay(dayNum, title)}
-                                  className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700"
-                                >
-                                  저장
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={cancelEditDay}
-                                  className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200"
-                                >
-                                  취소
-                                </button>
-                              </div>
-                            </div>
-                          ) : noteEditingDay === dayNum ? (
-                            <div className="mb-4 space-y-3 rounded-2xl border border-slate-200 bg-white p-3">
-                              <p className="text-xs text-slate-500">Day {dayNum} 메모를 입력하세요.</p>
-                              <textarea
-                                value={noteEditText}
-                                onChange={(e) => setNoteEditText(e.target.value)}
-                                rows={4}
-                                className="w-full rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-200"
-                                placeholder="예: 저녁 예약 필요 / 우천 시 실내 대체 코스"
-                              />
-                              <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => saveNoteToDay(dayNum)}
-                                  className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700"
-                                >
-                                  메모 저장
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={cancelNoteDay}
-                                  className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200"
-                                >
-                                  취소
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div data-print="hide" className="mb-4 flex flex-wrap gap-2">
-                              {HYBRID_SECTION_KEYS.map((sectionKey) => {
-                                const sectionTitle = HYBRID_SECTION_TITLES[sectionKey];
-                                const sectionState = sectionViewModels.find((section) => section.sectionKey === sectionKey)?.status;
-                                const isRegeneratingSection = sectionState === "regenerating";
-                                return (
-                                  <button
-                                    key={`${dayNum}-${sectionKey}`}
-                                    type="button"
-                                    onClick={() => void replaceSection(dayNum, sectionKey)}
-                                    disabled={isRegeneratingSection}
-                                    className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 transition hover:bg-amber-200 disabled:opacity-60"
-                                  >
-                                    {isRegeneratingSection ? `${sectionTitle} 생성 중...` : `${sectionTitle} 다시 만들기`}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-
-                          <div className="space-y-4">
-                            {sectionViewModels.map((section) => (
-                              <section key={`hybrid-${dayNum}-${section.sectionKey}`} className="space-y-2">
-                                <h3 className={`text-base font-semibold ${section.type === "meal" ? "text-rose-700" : "text-violet-800"}`}>
-                                  {section.title}
-                                </h3>
-                                <article className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-                                  {section.status === "regenerating" ? (
-                                    <p className="mb-2 text-xs font-medium text-violet-700">이 섹션을 다시 생성하고 있습니다...</p>
-                                  ) : null}
-                                  {section.status === "error" ? (
-                                    <p className="mb-2 text-xs font-medium text-rose-700">섹션 재생성에 실패했습니다. 다시 시도해 주세요.</p>
-                                  ) : null}
-                                  {section.places.length > 0 ? (
-                                    <div className="space-y-2">
-                                      {section.places.map((place, idx) => (
-                                        <article
-                                          key={`hybrid-place-${dayNum}-${section.sectionKey}-${idx}-${place.name}`}
-                                          id={`place-${
-                                            placeOrderLookup.get(
-                                              `${dayNum}::${section.title ?? ""}::${place.name.trim().toLowerCase()}`
-                                            ) ?? `missing-${dayNum}-${section.sectionKey}-${idx}`
-                                          }`}
-                                          className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"
-                                        >
-                                          <div className="flex items-start justify-between gap-3">
-                                            <div>
-                                              <p className="text-sm font-semibold text-slate-900">{place.name}</p>
-                                              <p className="mt-1 text-xs text-slate-600">
-                                                평점 {Number.isFinite(place.rating) ? place.rating.toFixed(1) : "-"}
-                                              </p>
-                                              {place.address ? (
-                                                <p className="mt-1 text-xs text-slate-600">{place.address}</p>
-                                              ) : null}
-                                            </div>
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                if (place.mapsUrl) {
-                                                  window.open(place.mapsUrl, "_blank", "noopener,noreferrer");
-                                                  return;
-                                                }
-                                                void focusPlaceOnMap(dayNum, place.name);
-                                              }}
-                                              className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-200"
-                                            >
-                                              지도
-                                            </button>
-                                          </div>
-                                        </article>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    <p className="text-sm text-slate-600">장소를 찾지 못했습니다.</p>
-                                  )}
-                                </article>
-                              </section>
-                            ))}
-                          </div>
-                        </article>
-                      )}
-                    </SortableDayCard>
-                  );
-                })}
-              </SortableContext>
-            </DndContext>
+            <TripEditor
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              sortableDayIds={sortableDayIds}
+              days={hybridEditorDays}
+              placeOrderLookup={placeOrderLookup}
+              regeneratingDay={regeneratingDay}
+              editingDay={editingDay}
+              editText={editText}
+              noteEditingDay={noteEditingDay}
+              noteEditText={noteEditText}
+              expandedWarningDay={expandedWarningDay}
+              onDragEnd={handleDayDragEnd}
+              onToggleWarning={(dayNum) => setExpandedWarningDay((prev) => (prev === dayNum ? null : dayNum))}
+              onStartEditDay={startEditDay}
+              onAddNoteToDay={addNoteToDay}
+              onReplaceDay={replaceDay}
+              onRemoveDay={removeDay}
+              onEditTextChange={setEditText}
+              onSaveEditDay={saveEditDay}
+              onCancelEditDay={cancelEditDay}
+              onNoteEditTextChange={setNoteEditText}
+              onSaveNoteToDay={saveNoteToDay}
+              onCancelNoteDay={cancelNoteDay}
+              onReplaceSection={(dayNum, sectionKey) => void replaceSection(dayNum, sectionKey as SectionKey)}
+              onFocusPlace={focusPlaceOnMap}
+              formatDuration={formatDuration}
+            />
           ) : (
             daySections.map(({ dayNum, title, raw, displayRaw }, dayIdx) => {
               const structuredDay = structuredDays.find((day) => day.day === dayNum);

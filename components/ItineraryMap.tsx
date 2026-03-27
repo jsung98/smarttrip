@@ -4,6 +4,7 @@ import { useMemo, useEffect, useState } from "react";
 import { GoogleMap, Marker, Polyline, useJsApiLoader } from "@react-google-maps/api";
 
 export type MapPoint = {
+  id?: string;
   name: string;
   lat: number;
   lon: number;
@@ -17,7 +18,7 @@ export type MapPoint = {
 type ItineraryMapProps = {
   points: MapPoint[];
   selectedDay?: number | "all";
-  focusedPlace?: { dayNum: number; name: string } | null;
+  focusedPlace?: { dayNum: number; name: string; placeId?: string } | null;
   onMarkerClick?: (order: number) => void;
 };
 
@@ -50,7 +51,13 @@ export default function ItineraryMap({
     region: "kr",
   });
 
-  const ordered = useMemo(() => filtered.slice(), [filtered]);
+  const ordered = useMemo(
+    () =>
+      filtered
+        .slice()
+        .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER)),
+    [filtered]
+  );
 
   const byDay = useMemo(() => {
     const map = new Map<number, MapPoint[]>();
@@ -85,8 +92,9 @@ export default function ItineraryMap({
     if (!focusedPlace) return -1;
     return ordered.findIndex(
       (p) =>
-        (p.dayNum ?? 1) === focusedPlace.dayNum &&
-        p.name.trim().toLowerCase() === focusedPlace.name.trim().toLowerCase()
+        ((focusedPlace.placeId && p.id === focusedPlace.placeId) ||
+          ((p.dayNum ?? 1) === focusedPlace.dayNum &&
+            p.name.trim().toLowerCase() === focusedPlace.name.trim().toLowerCase()))
     );
   }, [focusedPlace, ordered]);
 
@@ -160,7 +168,7 @@ export default function ItineraryMap({
           const isFocused = idx === focusedIndex;
           return (
             <Marker
-              key={`${p.name}-${idx}`}
+              key={p.id ?? `${p.name}-${idx}`}
               position={{ lat: p.lat, lng: p.lon }}
               label={{ text: label, color: "#ffffff", fontSize: isFocused ? "12px" : "11px", fontWeight: "700" }}
               onClick={() => onMarkerClick?.(order)}
