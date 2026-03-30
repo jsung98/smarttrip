@@ -1,4 +1,5 @@
-﻿import type { Metadata } from "next";
+import type { Metadata } from "next";
+import { AuthProvider } from "@/components/AuthProvider";
 import KakaoSdkScript from "@/components/KakaoSdkScript";
 import "./globals.css";
 
@@ -28,7 +29,7 @@ export default function RootLayout({
         )}
       </head>
       <body className="min-h-screen bg-slate-50 font-sans antialiased">
-        {children}
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );

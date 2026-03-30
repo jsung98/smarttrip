@@ -9,12 +9,15 @@ import {
 } from "@dnd-kit/core";
 import { useMemo, useState, useCallback, Fragment, useEffect, useRef, type CSSProperties } from "react";
 import Link from "next/link";
+import { useAuth } from "@/components/AuthProvider";
 import ItineraryMap, { type MapPoint } from "@/components/ItineraryMap";
 import TripEditor from "@/components/itinerary/TripEditor";
 import { getTripDayId, getTripSectionId, toTripDocument } from "@/lib/domain/trip-adapters";
 import { tripReducer } from "@/lib/domain/trip-reducer";
 import { analyzeStructuredDay } from "@/lib/feasibility";
 import { saveAndActivateItinerary } from "@/lib/localItineraryStore";
+import { getTripStorageGateway } from "@/lib/tripStorage";
+import { setCurrentTrip } from "@/lib/tripSessionStore";
 import { normalizeTripPayload, type StoredItinerary } from "@/lib/types";
 import type { TripDocument } from "@/lib/domain/trip-document";
 import type { Activity, DayPlan } from "@/types/itinerary";
@@ -1401,12 +1404,15 @@ function applyReplaceDayPatch(current: TripDocument, nextStored: StoredItinerary
 }
 
 export default function ItineraryView({ data: initialData }: { data: StoredItinerary }) {
+  const auth = useAuth();
   const [data, setData] = useState<StoredItinerary>(() => normalizeStoredForView(initialData));
   const [tripDocument, setTripDocument] = useState<TripDocument>(() => toTripDocument(normalizeStoredForView(initialData)));
   const [regeneratingDay, setRegeneratingDay] = useState<number | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareLoading, setShareLoading] = useState(false);
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [savingTrip, setSavingTrip] = useState(false);
   const [kakaoReady, setKakaoReady] = useState(false);
   const [editingDay, setEditingDay] = useState<number | null>(null);
   const [editText, setEditText] = useState<string>("");
@@ -1446,14 +1452,53 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
 
   const persistItinerary = useCallback((next: StoredItinerary, nextTripDocument?: TripDocument) => {
     const normalized = normalizeStoredForView(next);
-    const saved = saveAndActivateItinerary(normalized);
+    const saved = auth.status === "authenticated" ? normalized : saveAndActivateItinerary(normalized);
     const resolvedTripDocument = nextTripDocument ?? toTripDocument(saved);
+    setCurrentTrip(saved);
     dataRef.current = saved;
     tripDocumentRef.current = resolvedTripDocument;
     setData(saved);
     setTripDocument(resolvedTripDocument);
     return saved;
-  }, []);
+  }, [auth]);
+
+  const saveTrip = useCallback(async () => {
+    if (auth.status !== "authenticated") {
+      if (auth.status === "guest" && typeof window !== "undefined") {
+        window.location.href = auth.loginHref;
+        return;
+      }
+      setSaveMessage("카카오 로그인 후 내 일정에 저장할 수 있어요.");
+      return;
+    }
+
+    setSavingTrip(true);
+    setSaveMessage(null);
+    try {
+      const gateway = getTripStorageGateway(auth);
+      const result = await gateway.saveTrip({
+        snapshot: dataRef.current,
+        document: tripDocumentRef.current,
+        mode: "saved",
+        tripId: dataRef.current.remoteTripId,
+      });
+
+      const normalized = normalizeStoredForView({
+        ...result.snapshot,
+        remoteTripId: result.summary.id,
+        remoteUpdatedAt: result.summary.updatedAt,
+      });
+      dataRef.current = normalized;
+      tripDocumentRef.current = result.document;
+      setData(normalized);
+      setTripDocument(result.document);
+      setSaveMessage("내 일정에 저장했습니다.");
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : "일정 저장에 실패했습니다.");
+    } finally {
+      setSavingTrip(false);
+    }
+  }, [auth]);
 
   const replaceDay = useCallback(
   async (dayNum: number) => {
@@ -2322,6 +2367,14 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
         <div data-print="hide" className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            onClick={() => void saveTrip()}
+            disabled={savingTrip || auth.status === "loading"}
+            className="rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/40 disabled:opacity-60"
+          >
+            {savingTrip ? "저장 중..." : auth.status === "authenticated" ? "내 일정에 저장" : "로그인 후 저장"}
+          </button>
+          <button
+            type="button"
             onClick={downloadPdf}
             className="rounded-xl bg-white/90 px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-lg transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/40"
           >
@@ -2356,6 +2409,11 @@ export default function ItineraryView({ data: initialData }: { data: StoredItine
       {copyMessage && (
         <div data-print="hide" className="mb-4 rounded-xl bg-slate-900/90 px-4 py-2 text-sm text-white">
           {copyMessage}
+        </div>
+      )}
+      {saveMessage && (
+        <div data-print="hide" className="mb-4 rounded-xl bg-violet-50 px-4 py-2 text-sm text-violet-800">
+          {saveMessage}
         </div>
       )}
       {regeneratingDay !== null && (

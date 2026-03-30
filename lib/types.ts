@@ -72,6 +72,8 @@ export interface StoredItinerary {
   payload: TripFormData;
   generatedAt: string;
   localId?: string;
+  remoteTripId?: string;
+  remoteUpdatedAt?: string;
   savedAt?: string;
 }
 
@@ -282,6 +284,8 @@ export function normalizeStoredItinerary(input: unknown): StoredItinerary | null
     payload,
     generatedAt,
     localId: typeof input.localId === "string" ? input.localId : undefined,
+    remoteTripId: typeof input.remoteTripId === "string" ? input.remoteTripId : undefined,
+    remoteUpdatedAt: typeof input.remoteUpdatedAt === "string" ? input.remoteUpdatedAt : undefined,
     savedAt: typeof input.savedAt === "string" ? input.savedAt : undefined,
   };
 }

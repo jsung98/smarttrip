@@ -48,7 +48,7 @@ https://smarttrip-sigma.vercel.app
 
    Open http://localhost:3000.
 
-## Share link setup (Supabase)
+## Share link and trip storage setup (Supabase)
 
 Create a table for shared itineraries:
 
@@ -77,6 +77,23 @@ alter table public.itineraries
   add column if not exists deleted_at timestamptz;
 ```
 
+Create a table for logged-in user trips:
+
+```sql
+create table if not exists public.user_trips (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  user_id text not null,
+  title text not null,
+  city text not null,
+  country text not null,
+  nights integer not null,
+  document_json jsonb not null,
+  snapshot_json jsonb not null
+);
+```
+
 ## KakaoTalk share setup
 
 1. Create a Kakao Developers app and enable Kakao Link for Web.
@@ -85,6 +102,9 @@ alter table public.itineraries
 
 ```
 NEXT_PUBLIC_KAKAO_JAVASCRIPT_KEY=your-kakao-js-key
+KAKAO_REST_API_KEY=your-kakao-rest-api-key
+KAKAO_REDIRECT_URI=http://localhost:3000/api/auth/kakao/callback
+AUTH_SESSION_SECRET=replace-with-a-long-random-secret
 ```
 
 Optionally, pin the SDK version and integrity hash:

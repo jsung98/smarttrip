@@ -1,4 +1,5 @@
-﻿import TripForm from "@/components/TripForm";
+import AuthStatus from "@/components/AuthStatus";
+import TripForm from "@/components/TripForm";
 import RecentItineraries from "@/components/RecentItineraries";
 import countriesData from "@/data/countries.json";
 
@@ -16,6 +17,9 @@ export default function Home() {
         <p className="mt-4 text-lg text-slate-600">
           목적지와 스타일을 입력하면 AI가 날짜별 일정을 만들어 드려요.
         </p>
+        <div className="mt-6 flex justify-center">
+          <AuthStatus />
+        </div>
       </div>
       <div className="mx-auto mt-12 max-w-xl">
         <TripForm initialCountries={countries} />

@@ -1,6 +1,6 @@
 import { normalizeStoredItinerary, type StoredItinerary } from "@/lib/types";
+import { setCurrentTrip } from "@/lib/tripSessionStore";
 
-const CURRENT_KEY = "smart-trip-itinerary";
 const RECENT_KEY = "smart-trip-itineraries";
 const MAX_RECENT = 12;
 
@@ -46,10 +46,7 @@ export function prepareStoredItinerary(itinerary: StoredItinerary): StoredItiner
 }
 
 export function setCurrentItinerary(itinerary: StoredItinerary) {
-  if (!isBrowser()) return;
-  const normalized = normalizeStoredItinerary(itinerary);
-  if (!normalized) return;
-  sessionStorage.setItem(CURRENT_KEY, JSON.stringify(normalized));
+  setCurrentTrip(itinerary);
 }
 
 export function saveRecentItinerary(itinerary: StoredItinerary): StoredItinerary {
