@@ -1,12 +1,16 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useAuth } from "@/components/AuthProvider";
 import ItineraryView from "@/components/ItineraryView";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { normalizeStoredItinerary, type StoredItinerary } from "@/lib/types";
+import { getCurrentTrip } from "@/lib/tripSessionStore";
+import { getTripStorageGateway } from "@/lib/tripStorage";
 
 export default function ItineraryPage() {
+  const auth = useAuth();
   const [data, setData] = useState<StoredItinerary | null>(null);
   const [mounted, setMounted] = useState(false);
 
@@ -15,17 +19,26 @@ export default function ItineraryPage() {
   }, []);
 
   useEffect(() => {
-    if (!mounted || typeof window === "undefined") return;
-    try {
-      const raw = sessionStorage.getItem("smart-trip-itinerary");
-      if (raw) {
-        const normalized = normalizeStoredItinerary(JSON.parse(raw));
-        setData(normalized);
-      }
-    } catch {
-      setData(null);
+    if (!mounted) return;
+
+    const current = getCurrentTrip();
+    if (current) {
+      setData(current);
+      return;
     }
-  }, [mounted]);
+
+    const tripId = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("trip") : null;
+    if (!tripId || auth.status !== "authenticated") {
+      setData(null);
+      return;
+    }
+
+    const gateway = getTripStorageGateway(auth);
+    void gateway
+      .loadTrip(tripId)
+      .then((result) => setData(normalizeStoredItinerary(result?.snapshot ?? null)))
+      .catch(() => setData(null));
+  }, [auth, mounted]);
 
   if (!mounted) {
     return (

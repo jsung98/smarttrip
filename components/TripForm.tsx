@@ -2,6 +2,7 @@
 
 import { useState, useEffect, FormEvent, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/components/AuthProvider";
 import {
   BUDGET_MODES,
   COMPANION_TYPES,
@@ -13,7 +14,9 @@ import {
   type TravelStyle,
 } from "@/lib/types";
 import type { FinalItinerary, StructuredPlan } from "@/types/plan";
-import { saveAndActivateItinerary } from "@/lib/localItineraryStore";
+import { getTripStorageGateway } from "@/lib/tripStorage";
+import { setCurrentTrip } from "@/lib/tripSessionStore";
+import { toTripDocument } from "@/lib/domain/trip-adapters";
 import { Combo } from "@/components/CountryCityCombo";
 
 const NIGHTS_OPTIONS = Array.from({ length: 14 }, (_, i) => i + 1);
@@ -26,6 +29,7 @@ interface TripFormProps {
 
 export default function TripForm({ initialCountries }: TripFormProps) {
   const router = useRouter();
+  const auth = useAuth();
   const [countryCode, setCountryCode] = useState("");
   const [city, setCity] = useState("");
   const [nights, setNights] = useState<number>(3);
@@ -184,15 +188,25 @@ export default function TripForm({ initialCountries }: TripFormProps) {
       }
 
       setLoadingStep(3);
-      saveAndActivateItinerary({
+      const snapshot = {
         markdown: data.markdown,
         itinerary: data.itinerary,
         structuredPlan,
         finalItinerary,
-        schemaVersion: structuredPlan ? 2 : undefined,
+        schemaVersion: structuredPlan ? (2 as const) : undefined,
         payload,
         generatedAt: new Date().toISOString(),
-      });
+      };
+
+      setCurrentTrip(snapshot);
+      if (auth.status !== "authenticated") {
+        const gateway = getTripStorageGateway(auth);
+        await gateway.saveTrip({
+          snapshot,
+          document: toTripDocument(snapshot),
+          mode: "draft",
+        });
+      }
 
       router.push("/itinerary");
     } catch {
